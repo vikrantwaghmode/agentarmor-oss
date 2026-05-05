@@ -1,0 +1,6 @@
+# firewall.yaml
+# Only these domains will be allowed to pass through the firewall.
+allowed_domains:
+  - "api.openai.com"
+  - "api.anthropic.com"
+  - "generativelanguage.googleapis.com" # The primary Gemini API domain

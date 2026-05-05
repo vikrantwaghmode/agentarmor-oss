@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentArmor</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#07070e;
+  --surface:#0f0f1a;
+  --surface2:#181826;
+  --border:#22223a;
+  --text:#ddddf0;
+  --dim:#6868a0;
+  --green:#22c55e;
+  --red:#ef4444;
+  --amber:#f59e0b;
+  --blue:#60a5fa;
+  --purple:#a78bfa;
+  --r:10px;
+}
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;
+}
+
+/* ── Header ── */
+.hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 24px;border-bottom:1px solid var(--border);
+  background:var(--surface);position:sticky;top:0;z-index:10;
+}
+.logo{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:700;letter-spacing:-.3px}
+.logo em{color:var(--purple);font-style:normal}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 7px var(--green)}
+.hdr-right{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+
+/* ── Tabs ── */
+.tabs{display:flex;gap:0;padding:0 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.tab{
+  padding:11px 18px;background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--dim);cursor:pointer;font-size:13px;font-weight:500;
+  transition:color .15s;margin-bottom:-1px;
+}
+.tab:hover{color:var(--text)}
+.tab.on{color:var(--purple);border-bottom-color:var(--purple)}
+
+/* ── Layout ── */
+.body{padding:24px;max-width:1020px}
+.panel{display:none}.panel.on{display:block}
+
+/* ── Stat cards ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px}
+.stat-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:8px}
+.stat-val{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.c-blue{color:var(--blue)}.c-green{color:var(--green)}.c-red{color:var(--red)}.c-amber{color:var(--amber)}
+
+.info-bar{
+  display:flex;align-items:center;gap:16px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:13px 16px;
+  font-size:13px;color:var(--dim);margin-bottom:20px;
+}
+.info-bar strong{color:var(--text)}
+
+/* ── Cards ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.card-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:13px 16px;border-bottom:1px solid var(--border);
+  font-weight:600;font-size:13px;
+}
+.card-body{padding:16px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+/* ── Toggle ── */
+.tog{position:relative;width:38px;height:21px;flex-shrink:0}
+.tog input{display:none}
+.tog-sl{
+  position:absolute;inset:0;background:var(--border);border-radius:21px;
+  cursor:pointer;transition:background .2s;
+}
+.tog-sl::after{
+  content:'';position:absolute;width:15px;height:15px;background:#fff;
+  border-radius:50%;top:3px;left:3px;transition:transform .2s;
+}
+.tog input:checked+.tog-sl{background:var(--green)}
+.tog input:checked+.tog-sl::after{transform:translateX(17px)}
+
+/* ── Tag list ── */
+.sec-title{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:10px}
+.tags{display:flex;flex-direction:column;gap:6px;max-height:210px;overflow-y:auto;margin-bottom:12px}
+.tag{
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--surface2);border:1px solid var(--border);gap:10px;
+  border-radius:6px;padding:6px 10px;font-size:12px;font-family:monospace;
+}
+.tag span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tag .tog{flex-shrink:0}
+
+/* ── Add row ── */
+.add-row{display:flex;gap:8px}
+input[type=text]{
+  flex:1;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;padding:6px 10px;color:var(--text);
+  font-size:12px;font-family:monospace;outline:none;
+}
+input[type=text]:focus{border-color:var(--purple)}
+
+/* ── Buttons ── */
+.btn{padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn-p{background:var(--purple);color:#fff}
+.btn-ok{background:var(--green);color:#000}
+
+.save-row{display:flex;justify-content:flex-end;padding-top:16px}
+
+/* ── Alert ── */
+.alert{padding:10px 14px;border-radius:7px;font-size:12px;margin-bottom:14px;display:none}
+.alert-ok{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green)}
+.alert-err{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:var(--red)}
+
+/* ── Audit table ── */
+.tbl-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.tbl-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:11px 14px;border-bottom:1px solid var(--border);
+  font-size:12px;color:var(--dim);
+}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{
+  text-align:left;padding:9px 12px;color:var(--dim);
+  font-weight:600;text-transform:uppercase;letter-spacing:.4px;font-size:10px;
+  border-bottom:1px solid var(--border);
+}
+td{padding:7px 12px;border-bottom:1px solid var(--border);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--surface2)}
+
+/* ── Badges ── */
+.badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.b-blocked{background:rgba(239,68,68,.15);color:var(--red)}
+.b-redacted{background:rgba(245,158,11,.15);color:var(--amber)}
+.b-allowed{background:rgba(34,197,94,.15);color:var(--green)}
+
+/* ── Firewall ── */
+.domain-list{display:flex;flex-direction:column;gap:8px}
+.domain{
+  display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;padding:13px 16px;
+}
+.domain-ico{color:var(--green);font-size:15px}
+.domain-name{font-family:monospace;font-size:13px}
+.domain-note{font-size:12px;color:var(--dim);margin-top:14px;line-height:1.6}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}
+
+/* ── Role-based UI ── */
+.role-user .add-row,
+.role-user .save-row {
+  display: none;
+}
+.role-user input[type=checkbox] {
+  pointer-events: none;
+  opacity: 0.6;
+}
+.role-user .tog { /* Hide the entire toggle switch for user role */
+  display: none;
+}
+.role-user .btn-p { /* Add button */
+  display: none;
+}
+.logout-btn {
+  margin-left: 15px;
+  color: var(--dim);
+}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="logo">🛡️ Agent<em>Armor</em></div>
+  <div class="hdr-right">
+    <div class="dot"></div>
+    <span>Proxy active · <span id="h-uptime">—</span></span>
+    <button class="btn logout-btn" onclick="logout()">Logout</button>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab on" onclick="go('health',this)">Health</button>
+  <button class="tab" onclick="go('policy',this)">Policy</button>
+  <button class="tab" onclick="go('audit',this)">Audit Log</button>
+  <button class="tab" onclick="go('firewall',this)">Firewall</button>
+</div>
+
+<div class="body">
+
+  <!-- ── HEALTH ── -->
+  <div id="p-health" class="panel on">
+    <div class="info-bar">
+      <span>Started <strong id="h-started">—</strong></span>
+      <span style="margin-left:auto;color:var(--dim);font-size:11px">Auto-refreshes every 5 s</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-lbl">Total Events</div><div class="stat-val c-blue" id="h-total">—</div></div>
+      <div class="stat"><div class="stat-lbl">Allowed</div><div class="stat-val c-green" id="h-allowed">—</div></div>
+      <div class="stat"><div class="stat-lbl">Blocked</div><div class="stat-val c-red" id="h-blocked">—</div></div>
+      <div class="stat"><div class="stat-lbl">Redacted</div><div class="stat-val c-amber" id="h-redacted">—</div></div>
+      <div class="stat"><div class="stat-lbl">PI Rules</div><div class="stat-val" id="h-pi-rules">—</div></div>
+      <div class="stat"><div class="stat-lbl">Secret Rules</div><div class="stat-val" id="h-sec-rules">—</div></div>
+      <div class="stat"><div class="stat-lbl">PII Rules</div><div class="stat-val" id="h-pii-rules">—</div></div>
+      <div class="stat"><div class="stat-lbl">Malicious Rules</div><div class="stat-val" id="h-mc-rules">—</div></div>
+      <div class="stat"><div class="stat-lbl">Firewall Domains</div><div class="stat-val" id="h-fw-domains">—</div></div>
+    </div>
+  </div>
+
+  <!-- ── POLICY ── -->
+  <div id="p-policy" class="panel">
+    <div id="pol-alert" class="alert"></div>
+    <div class="two-col">
+
+      <!-- Prompt Injection -->
+      <div class="card">
+        <div class="card-hdr">
+          Prompt Injection
+          <label class="tog">
+            <input type="checkbox" id="pi-on" onchange="dirty()">
+            <span class="tog-sl"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <div class="sec-title">Blocked Phrases</div>
+          <div class="tags" id="pi-list"></div>
+          <div class="add-row">
+            <input type="text" id="pi-inp" placeholder="Add phrase…" onkeydown="if(event.key==='Enter')addPhrase()">
+            <button class="btn btn-p" onclick="addPhrase()">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Secret Redaction -->
+      <div class="card">
+        <div class="card-hdr">
+          Secret Redaction
+          <label class="tog">
+            <input type="checkbox" id="sec-on" onchange="dirty()">
+            <span class="tog-sl"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <div class="sec-title">Redact Patterns (Regex)</div>
+          <div class="tags" id="sec-list"></div>
+          <div class="add-row">
+            <input type="text" id="sec-inp" placeholder="Add regex…" onkeydown="if(event.key==='Enter')addPattern()">
+            <button class="btn btn-p" onclick="addPattern()">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PII / DLP -->
+      <div class="card">
+        <div class="card-hdr">
+          PII / DLP Scanner
+          <label class="tog">
+            <input type="checkbox" id="pii-on" onchange="dirty()">
+            <span class="tog-sl"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <div class="sec-title">Blocked Patterns (Regex)</div>
+          <div class="tags" id="pii-list"></div>
+          <div class="add-row">
+            <input type="text" id="pii-inp" placeholder="Add regex…" onkeydown="if(event.key==='Enter')addPiiPattern()">
+            <button class="btn btn-p" onclick="addPiiPattern()">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Malicious Content -->
+      <div class="card">
+        <div class="card-hdr">
+          Malicious Content
+          <label class="tog">
+            <input type="checkbox" id="mc-on" onchange="dirty()">
+            <span class="tog-sl"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <div class="sec-title">Blocked Patterns (Regex)</div>
+          <div class="tags" id="mc-list"></div>
+          <div class="add-row">
+            <input type="text" id="mc-inp" placeholder="Add regex…" onkeydown="if(event.key==='Enter')addMcPattern()">
+            <button class="btn btn-p" onclick="addMcPattern()">Add</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="save-row">
+      <button class="btn btn-ok" onclick="savePolicy()">
+Save Policy</button>
+    </div>
+  </div>
+
+  <!-- ── AUDIT LOG ── -->
+  <div id="p-audit" class="panel">
+    <div class="tbl-wrap">
+      <div class="tbl-hdr">
+        <span>Showing last 100 events</span>
+        <button class="btn btn-p" onclick="loadAudit()">Refresh</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Direction</th>
+            <th>Action</th>
+            <th>Rule Matched</th>
+            <th>Payload Snippet</th>
+          </tr>
+        </thead>
+        <tbody id="audit-body">
+          <!-- rows will be injected by JS -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── FIREWALL ── -->
+  <div id="p-firewall" class="panel">
+    <div class="card">
+      <div class="card-hdr">
+        Layer 3/4 Firewall Rules
+      </div>
+      <div class="card-body">
+        <div class="sec-title">Allowed Egress Domains</div>
+        <div class="domain-list" id="fw-list">
+          <!-- domains will be injected by JS -->
+        </div>
+        <div class="domain-note">
+          These are the only external domains the application container is allowed to contact.
+          All other outbound traffic is dropped. This is a read-only view of <code>firewall.yaml</code>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────
+let policyState = {};
+let _dirty = false;
+const API_BASE = '/armor/api';
+let authToken = localStorage.getItem('agentarmor_token');
+let userRole = 'none';
+
+async function apiFetch(path, options = {}) {
+  const headers = {
+    ...options.headers,
+    'Authorization': `Bearer ${authToken}`
+  };
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (res.status === 401) {
+    // Unauthorized, likely a bad token. Clear it and reload.
+    localStorage.removeItem('agentarmor_token');
+    document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:16px;">Invalid Token. Please reload and try again.</div>';
+    return null;
+  }
+  return res;
+}
+
+// ──────────────────────────────────────────────
+// Navigation
+// ──────────────────────────────────────────────
+function go(page, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+  document.getElementById(`p-${page}`).classList.add('on');
+}
+
+// ──────────────────────────────────────────────
+// API Calls & Rendering
+// ──────────────────────────────────────────────
+async function loadHealth() {
+  const res = await apiFetch('/stats');
+  if (!res) return;
+  const data = await res.json();
+  document.getElementById('h-total').textContent = data.total;
+  document.getElementById('h-allowed').textContent = data.allowed;
+  document.getElementById('h-blocked').textContent = data.blocked;
+  document.getElementById('h-redacted').textContent = data.redacted;
+  document.getElementById('h-uptime').textContent = data.uptime;
+  document.getElementById('h-started').textContent = new Date(data.start_time).toLocaleString();
+
+  document.getElementById('h-pi-rules').textContent = data.rule_counts.prompt_injection;
+  document.getElementById('h-sec-rules').textContent = data.rule_counts.secrets;
+  document.getElementById('h-pii-rules').textContent = data.rule_counts.pii;
+  document.getElementById('h-mc-rules').textContent = data.rule_counts.malicious_content;
+  document.getElementById('h-fw-domains').textContent = data.rule_counts.firewall_domains;
+}
+
+async function loadPolicy() {
+  const res = await apiFetch('/policy');
+  if (!res) return;
+  policyState = await res.json();
+  renderPolicy();
+}
+
+function renderPolicy() {
+  const { scanners } = policyState;
+  document.getElementById('pi-on').checked = scanners.prompt_injection.enabled;
+  document.getElementById('sec-on').checked = scanners.secrets.enabled;
+  document.getElementById('pii-on').checked = scanners.pii.enabled;
+  document.getElementById('mc-on').checked = scanners.malicious_content.enabled;
+
+  const piList = document.getElementById('pi-list');
+  piList.innerHTML = '';
+  scanners.prompt_injection.blocked_phrases.forEach((p, i) => {
+    piList.innerHTML += `
+      <div class="tag">
+        <label class="tog"><input type="checkbox" id="pi-rule-${i}" onchange="dirty()" ${p.enabled ? 'checked' : ''}><span class="tog-sl"></span></label>
+        <span>${p.rule}</span>
+      </div>`;
+  });
+
+  const secList = document.getElementById('sec-list');
+  secList.innerHTML = '';
+  scanners.secrets.redact_patterns.forEach((p, i) => {
+    secList.innerHTML += `
+      <div class="tag">
+        <label class="tog"><input type="checkbox" id="sec-rule-${i}" onchange="dirty()" ${p.enabled ? 'checked' : ''}><span class="tog-sl"></span></label>
+        <span>${p.rule}</span>
+      </div>`;
+  });
+
+  const piiList = document.getElementById('pii-list');
+  piiList.innerHTML = '';
+  scanners.pii.block_patterns.forEach((p, i) => {
+    piiList.innerHTML += `
+      <div class="tag">
+        <label class="tog"><input type="checkbox" id="pii-rule-${i}" onchange="dirty()" ${p.enabled ? 'checked' : ''}><span class="tog-sl"></span></label>
+        <span>${p.rule}</span>
+      </div>`;
+  });
+
+  const mcList = document.getElementById('mc-list');
+  mcList.innerHTML = '';
+  scanners.malicious_content.block_patterns.forEach((p, i) => {
+    mcList.innerHTML += `
+      <div class="tag">
+        <label class="tog"><input type="checkbox" id="mc-rule-${i}" onchange="dirty()" ${p.enabled ? 'checked' : ''}><span class="tog-sl"></span></label>
+        <span>${p.rule}</span>
+      </div>`;
+  });
+
+  _dirty = false;
+}
+
+async function loadAudit() {
+  const res = await apiFetch('/audit?limit=100');
+  if (!res) return;
+  const data = await res.json();
+  const tbody = document.getElementById('audit-body');
+  tbody.innerHTML = '';
+  data.forEach(e => {
+    const badge = {
+      'BLOCKED': 'b-blocked',
+      'REDACTED': 'b-redacted',
+      'ALLOWED': 'b-allowed'
+    }[e.action] || '';
+    tbody.innerHTML += `
+      <tr>
+        <td>${new Date(e.timestamp).toLocaleTimeString()}</td>
+        <td>${e.direction}</td>
+        <td><span class="badge ${badge}">${e.action}</span></td>
+        <td title="${e.rule_matched}">${e.rule_matched}</td>
+        <td title="${e.payload_snippet}">${e.payload_snippet}</td>
+      </tr>
+    `;
+  });
+}
+
+async function loadFirewall() {
+  const res = await apiFetch('/firewall');
+  if (!res) return;
+  const data = await res.json();
+  const list = document.getElementById('fw-list');
+  list.innerHTML = '';
+  data.allowed_domains.forEach(d => {
+    list.innerHTML += `
+      <div class="domain">
+        <span class="domain-ico">✅</span>
+        <span class="domain-name">${d}</span>
+      </div>
+    `;
+  });
+}
+
+// ──────────────────────────────────────────────
+// Policy Editing
+// ──────────────────────────────────────────────
+function dirty() { _dirty = true; }
+
+function addPhrase() {
+  const inp = document.getElementById('pi-inp');
+  if (inp.value.trim()) {
+    policyState.scanners.prompt_injection.blocked_phrases.push({ rule: inp.value.trim(), enabled: true });
+    inp.value = '';
+    renderPolicy();
+    dirty();
+  }
+}
+
+function addPattern() {
+  const inp = document.getElementById('sec-inp');
+  if (inp.value.trim()) {
+    policyState.scanners.secrets.redact_patterns.push({ rule: inp.value.trim(), enabled: true });
+    inp.value = '';
+    renderPolicy();
+    dirty();
+  }
+}
+
+function addPiiPattern() {
+  const inp = document.getElementById('pii-inp');
+  if (inp.value.trim()) {
+    policyState.scanners.pii.block_patterns.push({ rule: inp.value.trim(), enabled: true });
+    inp.value = '';
+    renderPolicy();
+    dirty();
+  }
+}
+
+function addMcPattern() {
+  const inp = document.getElementById('mc-inp');
+  if (inp.value.trim()) {
+    policyState.scanners.malicious_content.block_patterns.push({ rule: inp.value.trim(), enabled: true });
+    inp.value = '';
+    renderPolicy();
+    dirty();
+  }
+}
+
+async function savePolicy() {
+  if (!_dirty) {
+    showAlert('No changes to save.', 'ok');
+    return;
+  }
+  policyState.scanners.prompt_injection.enabled = document.getElementById('pi-on').checked;
+  policyState.scanners.secrets.enabled = document.getElementById('sec-on').checked;
+  policyState.scanners.pii.enabled = document.getElementById('pii-on').checked;
+  policyState.scanners.malicious_content.enabled = document.getElementById('mc-on').checked;
+
+  // Update enabled status for each individual rule
+  ['pi', 'sec', 'pii', 'mc'].forEach(type => {
+    let key, list;
+    if (type === 'pi') { key = 'prompt_injection'; list = 'blocked_phrases'; }
+    if (type === 'sec') { key = 'secrets'; list = 'redact_patterns'; }
+    if (type === 'pii') { key = 'pii'; list = 'block_patterns'; }
+    if (type === 'mc') { key = 'malicious_content'; list = 'block_patterns'; }
+
+    policyState.scanners[key][list].forEach((rule, i) => {
+      const checkbox = document.getElementById(`${type}-rule-${i}`);
+      if (checkbox) {
+        rule.enabled = checkbox.checked;
+      }
+    });
+  });
+
+
+  const res = await apiFetch('/policy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(policyState)
+  });
+
+  if (res.ok) {
+    showAlert('Policy saved successfully! Changes are live.', 'ok');
+    _dirty = false;
+  } else {
+    const err = await res.json();
+    showAlert(`Error saving policy: ${err.error}`, 'err');
+  }
+}
+
+function showAlert(msg, type) {
+  const el = document.getElementById('pol-alert');
+  el.textContent = msg;
+  el.className = `alert alert-${type}`;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none' }, 4000);
+}
+
+// ──────────────────────────────────────────────
+// Init
+// ──────────────────────────────────────────────
+async function checkAuth() {
+  if (!authToken) {
+    // Clearer prompt and trim whitespace
+    authToken = prompt('Please enter your AgentArmor access token to continue:');
+    if (authToken) {
+      authToken = authToken.trim(); // Trim whitespace
+    }
+    if (!authToken) {
+      document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:16px;">Access Denied. A token is required.</div>';
+      return false;
+    }
+    localStorage.setItem('agentarmor_token', authToken);
+  }
+
+  console.log('AgentArmor: Attempting to authenticate with token:', authToken); // Log token being sent
+  const res = await fetch(`${API_BASE}/auth/role`, {
+    headers: { 'Authorization': `Bearer ${authToken}` }
+  });
+
+  if (!res.ok) { // Handles network errors or 401/403 from server
+    console.error('AgentArmor: Authentication API call failed:', res.status, res.statusText);
+    document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:16px;">Authentication failed. Please reload.</div>';
+    return false;
+  }
+
+  const data = await res.json();
+  userRole = data.role;
+
+  if (userRole === 'none') {
+    console.warn('AgentArmor: Token provided is invalid or does not match any known role.');
+    localStorage.removeItem('agentarmor_token'); // The stored token is invalid
+    document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:16px;">Invalid Token. Please reload and try again.</div>';
+    return false;
+  }
+  document.body.classList.add(`role-${userRole}`);
+  console.log('AgentArmor: Authenticated successfully as role:', userRole);
+  return true;
+}
+
+function logout() {
+  localStorage.removeItem('agentarmor_token');
+  authToken = null;
+  location.reload();
+}
+
+async function init() {
+  const authorized = await checkAuth();
+  if (!authorized) return;
+
+  loadHealth();
+  loadPolicy();
+  loadAudit();
+  loadFirewall();
+  setInterval(loadHealth, 5000);
+}
+
+init();
+</script>
+</body>
+</html>

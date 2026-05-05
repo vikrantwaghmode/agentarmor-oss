@@ -1,0 +1,15 @@
+.env
+data/
+config/
+workspace/
+*.db
+
+# Go build artifacts
+# Add the names of your compiled binaries here if they are created locally
+# For example:
+# agentarmor
+# firewall
+
+# IDE/Editor specific files
+.vscode/
+.idea/
