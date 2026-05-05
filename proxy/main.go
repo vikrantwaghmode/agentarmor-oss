@@ -184,6 +184,12 @@ var (
 	// Auth tokens, loaded at startup
 	adminToken string
 	userToken  string
+
+	// Direct LLM proxy config, loaded at startup
+	llmProvider              string
+	llmApiKey                string
+	llmAuthHeaderName        string
+	llmAuthHeaderValuePrefix string
 )
 
 // ──────────────────────────────────────────────
@@ -654,8 +660,12 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL) {
-	// 1. Connect to the upstream OpenClaw gateway
-	backendURL := "ws://" + targetURL.Host + r.URL.Path
+	// 1. Connect to the upstream backend
+	backendScheme := "ws"
+	if targetURL.Scheme == "https" {
+		backendScheme = "wss"
+	}
+	backendURL := backendScheme + "://" + targetURL.Host + r.URL.Path
 	if r.URL.RawQuery != "" {
 		backendURL += "?" + r.URL.RawQuery
 	}
@@ -667,14 +677,24 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 		return
 	}
 
-	for _, h := range []string{"Authorization", "Cookie", "Sec-WebSocket-Protocol"} {
+	// Copy standard WS headers from client, but handle Authorization separately
+	for _, h := range []string{"Cookie", "Sec-WebSocket-Protocol", "Origin"} {
 		if v := r.Header.Get(h); v != "" {
 			dialReq.Header.Set(h, v)
 		}
 	}
 
-	gatewayOrigin := "http://127.0.0.1:" + targetURL.Port()
-	dialReq.Header.Set("Origin", gatewayOrigin)
+	// Inject the correct auth for the target
+	if llmProvider == "openclaw" {
+		// For openclaw, we pass through the client's auth header
+		if v := r.Header.Get("Authorization"); v != "" {
+			dialReq.Header.Set("Authorization", v)
+		}
+	} else if llmApiKey != "" {
+		// For direct providers, we inject the configured API key
+		dialReq.Header.Set(llmAuthHeaderName, llmAuthHeaderValuePrefix+llmApiKey)
+	}
+
 	dialReq.Header.Set("Host", targetURL.Host)
 	dialReq.Host = targetURL.Host
 
@@ -692,7 +712,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 	}
 	defer backendConn.Close()
 
-	log.Printf("🔌 WS backend connected (Origin: %s)", gatewayOrigin)
+	log.Printf("🔌 WS backend connected to %s", backendURL)
 
 	// 2. Upgrade the client connection
 	responseHeader := http.Header{}
@@ -853,6 +873,16 @@ func main() {
 	log.Printf("✅ User Token loaded: '%s'", userToken)
 	log.Println("✅ Authorization tokens loaded.")
 
+	// Load LLM provider config
+	llmProvider = os.Getenv("LLM_PROVIDER")
+	if llmProvider == "" {
+		llmProvider = "openclaw"
+	}
+	llmApiKey = os.Getenv("LLM_API_KEY")
+	llmAuthHeaderName = os.Getenv("LLM_AUTH_HEADER_NAME")
+	llmAuthHeaderValuePrefix = os.Getenv("LLM_AUTH_HEADER_VALUE_PREFIX")
+	log.Printf("✅ LLM Provider configured: %s", llmProvider)
+
 	initAuditDB()
 	loadPolicy()
 	go watchPolicyFile()
@@ -863,6 +893,19 @@ func main() {
 	}
 	target, _ := url.Parse(targetURL)
 	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Set up a Director to inject auth headers for direct providers
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		// We only inject the key if we are NOT talking to openclaw
+		if llmProvider != "openclaw" && llmApiKey != "" {
+			// Remove any existing auth header from the client, as it's for AgentArmor
+			req.Header.Del("Authorization")
+			// Add the provider-specific auth header
+			req.Header.Set(llmAuthHeaderName, llmAuthHeaderValuePrefix+llmApiKey)
+		}
+	}
 
 	// --- Streaming Response Scanner (for HTTP SSE/JSON) ---
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -906,14 +949,14 @@ func main() {
 </style>
 <a id="agentarmor-button" href="/armor/" target="_blank">🛡️ Agent Armor</a>
 `
-			// Only inject if the body tag exists
-			if strings.Contains(bodyString, "</body>") {
+			// Only inject if we are proxying to openclaw and the body tag exists
+			if llmProvider == "openclaw" && strings.Contains(bodyString, "</body>") {
 				modifiedBody := strings.Replace(bodyString, "</body>", injectionHTML+"</body>", 1)
 				resp.Body = io.NopCloser(strings.NewReader(modifiedBody))
 				resp.Header.Set("Content-Length", strconv.Itoa(len(modifiedBody)))
 				log.Println("✅ Injected AgentArmor dashboard button into OpenClaw UI")
 			} else {
-				// If no body tag, return original content
+				// If not openclaw or no body tag, return original content
 				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 			return nil

@@ -118,15 +118,33 @@ To run AgentArmor, you'll need Docker and Docker Compose installed.
     ```
 
 2.  **Configure Environment Variables:**
-    Create a `.env` file in the root directory of the project with your desired authentication tokens:
+    Copy the `.env.template` file to `.env` and fill in the required values.
+    ```bash
+    cp .env.template .env
     ```
-    # .env
-    ADMIN_TOKEN="your-admin-secret-token" # Change this to a strong, unique token
-    USER_TOKEN="your-user-secret-token"   # Change this to a strong, unique token
-    # OPENCLAW_GATEWAY_TOKEN="optional-openclaw-token" # If OpenClaw requires a specific token
-    # GEMINI_API_KEY="optional-gemini-api-key"         # If OpenClaw uses Gemini directly
+    Now, edit your `.env` file:
+    ```dotenv
+    # --- AgentArmor Security ---
+    ADMIN_TOKEN="your-admin-secret-token" # For full dashboard access
+    USER_TOKEN="your-user-secret-token"   # For read-only dashboard access
+
+    # --- LLM Provider Selection ---
+    # Choose ONE provider by uncommenting the line.
+    # Defaults to "openclaw" if none is selected.
+    LLM_PROVIDER="openai"
+    # LLM_PROVIDER="anthropic"
+    # LLM_PROVIDER="gemini"
+    # LLM_PROVIDER="openclaw"
+
+    # --- API Keys for LLM Providers ---
+    # Provide the key for the provider you selected above.
+    OPENAI_API_KEY="sk-..."
+    ANTHROPIC_API_KEY="sk-ant-..."
+    GEMINI_API_KEY="AIza..."
     ```
-    **Important:** Replace the placeholder tokens with strong, unique values.
+    **Important:**
+    *   Replace the placeholder `ADMIN_TOKEN` and `USER_TOKEN` with strong, unique values.
+    *   Ensure you provide the correct API key for your chosen `LLM_PROVIDER`.
 
 3.  **Review `policy.yaml` and `firewall.yaml`:**
     *   `policy.yaml`: Contains all the security rules. It will be automatically generated with default rules if not present or empty. You can edit this file, and AgentArmor will hot-reload the changes.
@@ -136,7 +154,7 @@ To run AgentArmor, you'll need Docker and Docker Compose installed.
     ```bash
     docker-compose up --build
     ```
-    This will build the AgentArmor proxy and firewall, start the OpenClaw gateway (if configured), and launch AgentArmor.
+    This will build the AgentArmor proxy and firewall and launch the service. If `LLM_PROVIDER` is set to `openclaw`, it will also start the OpenClaw gateway.
 
 5.  **Access the Dashboard:**
     Open your web browser and navigate to:
