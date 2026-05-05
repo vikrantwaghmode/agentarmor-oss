@@ -19,20 +19,20 @@ AgentArmor sits between your application and external LLM providers, inspecting 
 ```
                     ┌──────────────────────┐
                     │   Your Application   │
-                    │  (OpenClaw, custom)   │
+                    │  (OpenClaw, custom)  │
                     └──────────┬───────────┘
                                │ HTTP / WebSocket
                     ┌──────────▼───────────────────────────────────┐
                     │         AgentArmor Proxy (Layer 7)           │
                     │                                              │
-                    │  ┌────────────┐  ┌────────────┐  ┌────────┐ │
-                    │  │  Prompt    │  │  Secret    │  │  PII   │ │
-                    │  │ Injection  │  │ Redaction  │  │  DLP   │ │
-                    │  └────────────┘  └────────────┘  └────────┘ │
-                    │  ┌────────────┐  ┌────────────┐  ┌────────┐ │
-                    │  │ Malicious  │  │   Audit    │  │  Web   │ │
-                    │  │  Content   │  │  Logging   │  │ Dash.  │ │
-                    │  └────────────┘  └────────────┘  └────────┘ │
+                    │  ┌────────────┐  ┌────────────┐  ┌────────┐  │
+                    │  │  Prompt    │  │  Secret    │  │  PII   │  │
+                    │  │ Injection  │  │ Redaction  │  │  DLP   │  │
+                    │  └────────────┘  └────────────┘  └────────┘  │
+                    │  ┌────────────┐  ┌────────────┐  ┌────────┐  │
+                    │  │ Malicious  │  │   Audit    │  │  Web   │  │
+                    │  │  Content   │  │  Logging   │  │ Dash.  │  │
+                    │  └────────────┘  └────────────┘  └────────┘  │
                     └──────────┬───────────────────────────────────┘
                                │ Filtered traffic
                     ┌──────────▼───────────────────────────────────┐
@@ -121,27 +121,27 @@ GEMINI_API_KEY="AIza..."
  Inbound Request
        │
        ▼
- ┌─────────────────┐     ┌─────────┐
- │ Prompt Injection │──▶  │ BLOCKED │  → 403 / WS drop
- │     Scanner      │     └─────────┘
+ ┌─────────────────┐      ┌─────────┐
+ │ Prompt Injection│──▶   │ BLOCKED │  → 403 / WS drop
+ │     Scanner     │      └─────────┘
  └────────┬────────┘
           │ pass
           ▼
  ┌─────────────────┐     ┌──────────┐
- │ Secret Redaction │──▶  │ REDACTED │  → modified payload forwarded
- │     Scanner      │     └──────────┘
+ │ Secret Redaction│──▶  │ REDACTED │  → modified payload forwarded
+ │     Scanner     │     └──────────┘
  └────────┬────────┘
           │ pass
           ▼
  ┌─────────────────┐     ┌─────────┐
  │   PII / DLP     │──▶  │ BLOCKED │
- │    Scanner       │     └─────────┘
+ │    Scanner      │     └─────────┘
  └────────┬────────┘
           │ pass
           ▼
  ┌─────────────────┐     ┌─────────┐
  │   Malicious     │──▶  │ BLOCKED │
- │   Content        │     └─────────┘
+ │   Content       │     └─────────┘
  └────────┬────────┘
           │ clean
           ▼
@@ -155,7 +155,7 @@ GEMINI_API_KEY="AIza..."
           ▼ response
  ┌─────────────────┐
  │ Response DLP    │──▶  Streaming secret scan
- │   Scanner        │
+ │   Scanner       │
  └────────┬────────┘
           │
           ▼
