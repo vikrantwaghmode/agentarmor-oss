@@ -7,10 +7,13 @@ services:
     ports:
       - "8080:8080"          # AgentArmor Proxy (the only entry point)
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY} # Optional: if used by OpenClaw
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN} # Optional: if used by OpenClaw
       - ADMIN_TOKEN=${ADMIN_TOKEN}
       - USER_TOKEN=${USER_TOKEN}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
     volumes:
       - ./data:/app/data                # Audit logs (SQLite)
       - ./config:/data/.openclaw        # OpenClaw state & config
