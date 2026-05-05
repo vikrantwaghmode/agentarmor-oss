@@ -1,241 +1,287 @@
-# 🛡️ AgentArmor: LLM Security Proxy
-
-AgentArmor is a robust, two-layered security proxy designed to protect applications interacting with Large Language Models (LLMs). It acts as a critical middleware, inspecting and controlling all communication between your application and AI services (e.g., OpenAI, Anthropic, Google Gemini) to prevent common vulnerabilities and ensure data privacy.
-
-## ✨ Key Features & Strengths
-
-AgentArmor provides a "defense-in-depth" strategy with the following core capabilities:
-
-1.  **Layer 7 (Application) Proxy:**
-    *   **Intelligent Content Filtering:** Scans both inbound (application to LLM) and outbound (LLM to application) traffic for malicious patterns and sensitive data.
-    *   **Policy-Driven Security:** Configurable via `policy.yaml` with hot-reloading for instant updates.
-    *   **Streaming Support:** Efficiently scans and redacts content in real-time for streaming LLM responses (e.g., `text/event-stream`).
-    *   **Comprehensive Scanners:**
-        *   **Prompt Injection:** Blocks attempts to manipulate LLM behavior.
-        *   **Secret Redaction (DLP):** Prevents accidental leakage of API keys, tokens, and other credentials.
-        *   **PII/DLP:** Detects and blocks Personally Identifiable Information (PII) like email addresses, phone numbers, SSNs, and credit card numbers.
-        *   **Malicious Content:** Flags and blocks common web attack vectors (SQLi, XSS, SSRF, Command Injection), executables, scripts, and potential archive bombs.
-    *   **Granular Rule Control:** Each individual rule within a scanner can be enabled or disabled via the dashboard.
-    *   **Audit Logging:** All requests, actions (blocked, redacted, allowed), and matched rules are logged to a SQLite database for forensic analysis.
-    *   **Web Dashboard:** A user-friendly interface (`http://localhost:8080/armor/`) for real-time monitoring, policy management, and audit log review.
-    *   **Role-Based Access Control (RBAC):** Supports `admin` (full control) and `user` (read-only) roles for dashboard access.
-
-2.  **Layer 3/4 (Network) Firewall:**
-    *   **Network Kill Switch:** Configures `iptables` to strictly control outbound network connections, allowing traffic only to explicitly whitelisted LLM domains.
-    *   **Zero-Trust Egress:** Prevents data exfiltration and unauthorized external communication even if the application layer is compromised.
-    *   **DNS Resolution:** Intelligently allows outbound DNS queries to resolve whitelisted domains.
-
-## 📐 Architecture
-
-AgentArmor sits between your application and the external LLM providers, acting as a transparent security layer.
-
-```mermaid
-graph TD
-    A[Your Application] -->|HTTP/WS requests| B(AgentArmor Proxy: L7 Security)
-    B -->|Filtered HTTP/WS requests| C(External LLM Providers)
-    C -->|LLM Responses| B
-    B -->|Filtered HTTP/WS responses| A
-
-    subgraph Host OS
-        D[AgentArmor Firewall: L3/4 Security]
-    end
-
-    B --- D
-    C --- D
-
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#bbf,stroke:#333,stroke-width:2px
-    style C fill:#ccf,stroke:#333,stroke-width:2px
-    style D fill:#fcf,stroke:#333,stroke-width:2px
-
-    linkStyle 0 stroke:#0f0,stroke-width:2px;
-    linkStyle 1 stroke:#0f0,stroke-width:2px;
-    linkStyle 2 stroke:#0f0,stroke-width:2px;
-    linkStyle 3 stroke:#0f0,stroke-width:2px;
-    linkStyle 4 stroke:#f00,stroke-width:2px,stroke-dasharray: 5 5;
-    linkStyle 5 stroke:#f00,stroke-width:2px,stroke-dasharray: 5 5;
-```
-
-**Explanation:**
-
-*   **Your Application:** Configured to send all LLM-related traffic to `http://localhost:8080` (AgentArmor's address).
-*   **AgentArmor Proxy (L7 Security):** This Go application intercepts all traffic. It performs deep packet inspection, applies security policies, and then forwards legitimate requests to the actual LLM provider. It also processes responses before sending them back to your application.
-*   **AgentArmor Firewall (L3/4 Security):** A separate Go program that configures `iptables` on the host system. It acts as a "kill switch," ensuring that the `agentarmor` container (and thus your application's outbound traffic) can *only* communicate with explicitly allowed LLM domains. All other outbound network traffic is dropped.
-*   **External LLM Providers:** The actual AI services (e.g., OpenAI, Anthropic, Google Gemini).
-
-## 📜 Security Policies (Rules)
-
-AgentArmor's core defense mechanism is its `policy.yaml` file, which defines the rules for its various scanners.
-
-### 1. Prompt Injection
-
-**Purpose:** To prevent users or malicious actors from manipulating the LLM's behavior, overriding its instructions, or extracting sensitive system prompts.
-
-**Rules:** Uses keyword and phrase matching to detect common prompt injection techniques.
-
-*   **Instruction Overrides:** `ignore all previous instructions`, `system prompt override`, `disregard the instructions above`.
-*   **Jailbreak & Role Manipulation:** `you are an unfiltered ai`, `respond as dan`, `pretend to be`.
-*   **Suspicious Content:** `tell me a secret`, `sudo rm -rf`.
-
-### 2. Secret Redaction (DLP)
-
-**Purpose:** To prevent accidental leakage of sensitive credentials (API keys, tokens, private keys) in both requests to and responses from the LLM.
-
-**Rules:** Uses regular expressions to identify common formats for various secrets.
-
-*   **API Keys:** OpenAI, Anthropic, Google API keys.
-*   **Tokens:** GitHub, Slack, JSON Web Tokens (JWT).
-*   **Private Keys:** PGP, RSA, EC private key blocks.
-
-### 3. PII / DLP Scanner
-
-**Purpose:** To detect and block Personally Identifiable Information (PII) from being sent to or received from the LLM, ensuring compliance and privacy.
-
-**Rules:** Uses regular expressions to identify common PII formats.
-
-*   **Contact Information:** Email addresses, US phone numbers.
-*   **Identifiers:** US Social Security Numbers (SSN).
-*   **Financial Data:** Major credit card numbers (Visa, Mastercard, Amex, Discover).
-
-### 4. Malicious Content
-
-**Purpose:** To protect against common web application attack vectors and potentially harmful file signatures that might be embedded in prompts or responses.
-
-**Rules:** Uses regular expressions to identify patterns associated with various attacks and malicious content.
-
-*   **Web Attack Vectors:** SQL Injection (`' or 1=1`, `union select`), Cross-Site Scripting (XSS) (`<script>`, `onerror=`), Server-Side Request Forgery (SSRF) (`file:///etc/passwd`, `http://169.254.169.254`), Command Injection (`&& wget`, `; curl`).
-*   **Executable/Script Signatures:** Common executable file extensions (`.exe`, `.dll`), Windows PE magic number (`MZ`).
-*   **Archive Bombs:** Common archive file extensions (`.zip`, `.rar`, `.7z`).
-
-## 🚀 Getting Started
-
-To run AgentArmor, you'll need Docker and Docker Compose installed.
-
-1.  **Clone the repository:**
-    ```bash
-    git clone <your-repo-url>
-    cd agentarmor
-    ```
-
-2.  **Configure Environment Variables:**
-    Copy the `.env.template` file to `.env` and fill in the required values.
-    ```bash
-    cp .env.template .env
-    ```
-    Now, edit your `.env` file:
-    ```dotenv
-    # --- AgentArmor Security ---
-    ADMIN_TOKEN="your-admin-secret-token" # For full dashboard access
-    USER_TOKEN="your-user-secret-token"   # For read-only dashboard access
-
-    # --- LLM Provider Selection ---
-    # Choose ONE provider by uncommenting the line.
-    # Defaults to "openclaw" if none is selected.
-    LLM_PROVIDER="openai"
-    # LLM_PROVIDER="anthropic"
-    # LLM_PROVIDER="gemini"
-    # LLM_PROVIDER="openclaw"
-
-    # --- API Keys for LLM Providers ---
-    # Provide the key for the provider you selected above.
-    OPENAI_API_KEY="sk-..."
-    ANTHROPIC_API_KEY="sk-ant-..."
-    GEMINI_API_KEY="AIza..."
-    ```
-    **Important:**
-    *   Replace the placeholder `ADMIN_TOKEN` and `USER_TOKEN` with strong, unique values.
-    *   Ensure you provide the correct API key for your chosen `LLM_PROVIDER`.
-
-3.  **Review `policy.yaml` and `firewall.yaml`:**
-    *   `policy.yaml`: Contains all the security rules. It will be automatically generated with default rules if not present or empty. You can edit this file, and AgentArmor will hot-reload the changes.
-    *   `firewall.yaml`: Defines the allowed external domains for LLM communication.
-
-4.  **Start the services:**
-    ```bash
-    docker-compose up --build
-    ```
-    This will build the AgentArmor proxy and firewall and launch the service. If `LLM_PROVIDER` is set to `openclaw`, it will also start the OpenClaw gateway.
-
-5.  **Access the Dashboard:**
-    Open your web browser and navigate to:
-    http://localhost:8080/armor/
-
-    You will be prompted to enter an access token. Use either your `ADMIN_TOKEN` or `USER_TOKEN` from the `.env` file.
-
-6.  **Use your Application:**
-    Configure your application (e.g., OpenClaw UI) to send its LLM requests to `http://localhost:8080` instead of directly to the LLM provider.
-
-## 🔮 Future Planned Work
-
-AgentArmor is continuously evolving. Here are some potential enhancements:
-
-*   **LLM-Powered Scanners:** Integrate a small, local LLM to perform more nuanced and contextual analysis of prompts for injection attempts, going beyond regex matching.
-*   **Rate Limiting:** Implement per-user or per-IP rate limiting to prevent abuse and denial-of-service attacks against LLMs.
-*   **Dynamic Firewall Updates:** Allow firewall rules to be updated via the dashboard API without requiring a full service restart.
-*   **Advanced Audit Logging:** Export audit logs to external SIEM (Security Information and Event Management) systems.
-*   **Customizable Redaction:** Allow users to define custom redaction strings or methods (e.g., hashing, masking).
-*   **Threat Intelligence Feeds:** Integrate with external threat intelligence feeds to dynamically update malicious content patterns.
-*   **Multi-Tenancy:** Support multiple application instances with isolated policies and audit trails.
-*   **WebAssembly (WASM) Filters:** Explore using WASM modules for highly performant and customizable content filtering logic.
-*   **Configuration via Database:** Store policies in a database instead of YAML files for easier management in distributed environments.
+<p align="center">
+  <h1 align="center">🛡️ AgentArmor</h1>
+  <p align="center">
+    <strong>A two-layer security proxy for LLM-powered applications</strong>
+  </p>
+  <p align="center">
+    <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
+    <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24">
+    <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/layer_7-application_proxy-8B5CF6?style=flat-square" alt="Layer 7">
+    <img src="https://img.shields.io/badge/layer_3/4-network_firewall-EF4444?style=flat-square" alt="Layer 3/4">
+  </p>
+</p>
 
 ---
 
-**AgentArmor** is designed to provide robust, adaptable security for your LLM-powered applications.
+AgentArmor sits between your application and external LLM providers, inspecting and controlling **every** request and response. It combines application-layer content scanning with network-layer egress control — so even if one layer is bypassed, the other still protects you.
 
-```mermaid
-sequenceDiagram
-    participant App as Your Application
-    participant Proxy as AgentArmor Proxy
-    participant LLM as External LLM
-    participant DB as Audit DB
-    participant FW as AgentArmor Firewall
-
-    App->>Proxy: HTTP/WS Request (e.g., prompt)
-    activate Proxy
-    Proxy->>Proxy: Scan Request Payload (PI, PII, Malicious)
-    alt Request Blocked
-        Proxy->>DB: Log BLOCKED event
-        Proxy-->>App: Error (e.g., 403 HTTP, WS Error Frame)
-    else Request Redacted
-        Proxy->>DB: Log REDACTED event
-        Proxy->>Proxy: Modify Payload (redact secrets)
-        Proxy->>LLM: Forward Modified Request
-        activate LLM
-    else Request Allowed
-        Proxy->>DB: Log ALLOWED event
-        Proxy->>LLM: Forward Request
-        activate LLM
-    end
-
-    LLM-->>Proxy: LLM Response (streaming/full)
-    deactivate LLM
-    Proxy->>Proxy: Scan Response Payload (Secrets)
-    alt Response Redacted
-        Proxy->>DB: Log REDACTED event
-        Proxy->>Proxy: Modify Payload (redact secrets)
-        Proxy-->>App: Forward Modified Response
-    else Response Allowed
-        Proxy->>DB: Log ALLOWED event
-        Proxy-->>App: Forward Response
-    end
-    deactivate Proxy
-
-    App->>Proxy: Dashboard Access (HTTP GET /armor/)
-    activate Proxy
-    Proxy->>Proxy: Authenticate/Authorize Role (Admin/User)
-    alt Admin Role
-        Proxy->>DB: Fetch Audit Logs
-        Proxy->>Proxy: Read Policy/Firewall Config
-        Proxy-->>App: Render Admin Dashboard
-    else User Role
-        Proxy->>DB: Fetch Audit Logs
-        Proxy->>Proxy: Read Policy/Firewall Config
-        Proxy-->>App: Render Read-Only Dashboard
-    end
-    deactivate Proxy
-
-    Proxy->>FW: (Implicit) Firewall enforces egress
-    FW->>LLM: Allow only whitelisted domains
-    FW->>LLM: Drop all other outbound traffic
 ```
+                    ┌──────────────────────┐
+                    │   Your Application   │
+                    │  (OpenClaw, custom)   │
+                    └──────────┬───────────┘
+                               │ HTTP / WebSocket
+                    ┌──────────▼───────────────────────────────────┐
+                    │         AgentArmor Proxy (Layer 7)           │
+                    │                                              │
+                    │  ┌────────────┐  ┌────────────┐  ┌────────┐ │
+                    │  │  Prompt    │  │  Secret    │  │  PII   │ │
+                    │  │ Injection  │  │ Redaction  │  │  DLP   │ │
+                    │  └────────────┘  └────────────┘  └────────┘ │
+                    │  ┌────────────┐  ┌────────────┐  ┌────────┐ │
+                    │  │ Malicious  │  │   Audit    │  │  Web   │ │
+                    │  │  Content   │  │  Logging   │  │ Dash.  │ │
+                    │  └────────────┘  └────────────┘  └────────┘ │
+                    └──────────┬───────────────────────────────────┘
+                               │ Filtered traffic
+                    ┌──────────▼───────────────────────────────────┐
+                    │     iptables Egress Firewall (Layer 3/4)     │
+                    │     Zero-trust: only whitelisted domains     │
+                    └──────────┬───────────────────────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+         ┌─────────┐    ┌──────────┐    ┌───────────┐
+         │ OpenAI  │    │Anthropic │    │  Gemini   │
+         └─────────┘    └──────────┘    └───────────┘
+```
+
+## Why AgentArmor?
+
+AI agents can browse the web, execute code, and call APIs — but most teams ship them with **zero middleware security**. A single prompt injection can leak API keys, exfiltrate data, or execute malicious commands with no audit trail.
+
+AgentArmor provides defense-in-depth: every message is scanned, every action is logged, and the container can only reach domains you explicitly allow.
+
+## Features
+
+### Layer 7 — Application Proxy
+
+| Scanner | Direction | Action | What it catches |
+|---------|-----------|--------|-----------------|
+| **Prompt Injection** | Inbound | Block | Jailbreaks, instruction overrides, role manipulation |
+| **Secret Redaction** | Both | Redact | API keys (OpenAI, Anthropic, Google), JWTs, private keys |
+| **PII / DLP** | Both | Block | Email, phone, SSN, credit card numbers |
+| **Malicious Content** | Both | Block | SQLi, XSS, SSRF, command injection, executables |
+
+Additional capabilities:
+
+- **WebSocket scanning** — Intercepts and scans real-time WebSocket frames, not just HTTP POST bodies
+- **Streaming DLP** — Sliding-window scanner catches secrets fragmented across streaming response chunks
+- **Hot-reload policies** — Update `policy.yaml` without restarting; changes apply within seconds
+- **Audit logging** — Every request logged to SQLite with timestamp, action, matched rule, and payload snippet
+- **Web dashboard** — Real-time monitoring at `http://localhost:8080/armor/` with RBAC (admin/user roles)
+- **Granular rule control** — Enable/disable individual rules from the dashboard
+
+### Layer 3/4 — Network Firewall
+
+- **Zero-trust egress** — `iptables` DROP rule blocks all outbound traffic except whitelisted domains
+- **DNS-aware** — Allows runtime DNS resolution for whitelisted domains
+- **Container-scoped** — Firewall rules apply to the entire container, including all child processes
+
+## Quick Start
+
+**Prerequisites:** Docker and Docker Compose
+
+```bash
+# 1. Clone
+git clone https://github.com/vikrantwaghmode/agentarmor-oss.git
+cd agentarmor-oss
+
+# 2. Configure
+cp .env.template .env
+# Edit .env — add your API key and set access tokens
+
+# 3. Run
+docker compose up --build
+
+# 4. Open the dashboard
+# → http://localhost:8080/armor/
+```
+
+### Environment Variables
+
+```bash
+# --- Dashboard Access ---
+ADMIN_TOKEN="your-admin-token"        # Full dashboard control
+USER_TOKEN="your-user-token"          # Read-only dashboard access
+
+# --- LLM Provider (choose one) ---
+LLM_PROVIDER="gemini"                 # openai | anthropic | gemini | openclaw
+
+# --- API Keys (for your chosen provider) ---
+OPENAI_API_KEY="sk-..."
+ANTHROPIC_API_KEY="sk-ant-..."
+GEMINI_API_KEY="AIza..."
+```
+
+## How It Works
+
+```
+ Inbound Request
+       │
+       ▼
+ ┌─────────────────┐     ┌─────────┐
+ │ Prompt Injection │──▶  │ BLOCKED │  → 403 / WS drop
+ │     Scanner      │     └─────────┘
+ └────────┬────────┘
+          │ pass
+          ▼
+ ┌─────────────────┐     ┌──────────┐
+ │ Secret Redaction │──▶  │ REDACTED │  → modified payload forwarded
+ │     Scanner      │     └──────────┘
+ └────────┬────────┘
+          │ pass
+          ▼
+ ┌─────────────────┐     ┌─────────┐
+ │   PII / DLP     │──▶  │ BLOCKED │
+ │    Scanner       │     └─────────┘
+ └────────┬────────┘
+          │ pass
+          ▼
+ ┌─────────────────┐     ┌─────────┐
+ │   Malicious     │──▶  │ BLOCKED │
+ │   Content        │     └─────────┘
+ └────────┬────────┘
+          │ clean
+          ▼
+ ┌─────────────────┐
+ │iptables Firewall│──▶  Whitelisted domains only
+ └────────┬────────┘
+          │
+          ▼
+     LLM Provider
+          │
+          ▼ response
+ ┌─────────────────┐
+ │ Response DLP    │──▶  Streaming secret scan
+ │   Scanner        │
+ └────────┬────────┘
+          │
+          ▼
+  Back to your app
+```
+
+All decisions are logged to the audit database. View them in the dashboard or query directly:
+
+```bash
+sqlite3 ./data/audit.db "SELECT timestamp, direction, action, rule_matched FROM audit_logs ORDER BY id DESC LIMIT 10;"
+```
+
+## Configuration
+
+### Security Policies — `policy.yaml`
+
+Policies are hot-reloadable. Edit the file and AgentArmor picks up changes automatically.
+
+```yaml
+scanners:
+  prompt_injection:
+    enabled: true
+    blocked_phrases:
+      - "ignore all previous instructions"
+      - "you are an unfiltered ai"
+      - "system prompt override"
+      - "respond as dan"
+
+  secrets:
+    enabled: true
+    redact_patterns:
+      - '(?i)(sk-[a-zA-Z0-9]{20,})'           # OpenAI
+      - '(?i)(sk-ant-[a-zA-Z0-9-]{20,})'       # Anthropic
+      - '(?i)(AIza[a-zA-Z0-9_-]{35})'           # Google
+
+  pii:
+    enabled: true
+    patterns:
+      - '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'  # Email
+      - '\b\d{3}-\d{2}-\d{4}\b'                                   # SSN
+
+  malicious_content:
+    enabled: true
+    patterns:
+      - "(?i)(union\\s+select|' or 1=1)"        # SQLi
+      - "(?i)(<script|onerror=)"                  # XSS
+      - "(?i)(file:///etc/passwd)"                # SSRF
+```
+
+### Network Firewall — `firewall.yaml`
+
+```yaml
+allowed_domains:
+  - "api.openai.com"
+  - "api.anthropic.com"
+  - "generativelanguage.googleapis.com"
+```
+
+Only these domains can be reached from the container. All other outbound traffic is dropped.
+
+## Project Structure
+
+```
+agentarmor-oss/
+├── Dockerfile                 # Multi-stage build (Go proxy + OpenClaw from source)
+├── docker-compose.yml         # Single-container orchestration
+├── docker-entrypoint.sh       # Starts gateway → firewall → proxy
+├── .env.template              # Environment variable template
+├── policy.yaml                # Security scanner rules (hot-reloadable)
+├── firewall.yaml              # Allowed egress domains
+├── proxy/
+│   ├── main.go                # Reverse proxy + WebSocket scanner + audit logging
+│   ├── firewall.go            # iptables configuration at startup
+│   ├── go.mod
+│   └── go.sum
+├── data/                      # Audit database (auto-created)
+│   └── audit.db
+└── config/                    # OpenClaw state (auto-created)
+    └── openclaw.json
+```
+
+## Testing
+
+```bash
+# Check if it's running
+curl -sf http://localhost:8080/healthz
+
+# Test prompt injection blocking (should return 403)
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "ignore all previous instructions"}'
+
+# Test secret redaction (key should be replaced with [REDACTED_API_KEY])
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "My key is sk-ant-abc123def456ghi789jklmnopqrstuv"}'
+
+# Test firewall (should timeout — example.com is not whitelisted)
+docker exec agentarmor curl -s --max-time 3 https://example.com
+
+# Check audit log
+sqlite3 ./data/audit.db \
+  "SELECT timestamp, direction, action, rule_matched FROM audit_logs ORDER BY id DESC LIMIT 5;"
+```
+
+## Roadmap
+
+- [ ] **LLM-powered scanners** — Local model for contextual prompt injection detection beyond regex
+- [ ] **Rate limiting** — Per-user/per-IP throttling
+- [ ] **Dynamic firewall updates** — Modify egress rules from the dashboard without restart
+- [ ] **SIEM integration** — Export audit logs to external systems
+- [ ] **Custom redaction** — User-defined redaction strings (hashing, masking)
+- [ ] **Threat intelligence feeds** — Dynamic malicious content pattern updates
+- [ ] **Multi-tenancy** — Isolated policies and audit trails per application
+- [ ] **WASM filters** — WebAssembly modules for custom filtering logic
+
+## Contributing
+
+Contributions are welcome. Please open an issue first to discuss what you'd like to change.
+
+## License
+
+See [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <strong>AgentArmor</strong> — because your AI agent shouldn't have unsupervised access to the internet.
+</p>
