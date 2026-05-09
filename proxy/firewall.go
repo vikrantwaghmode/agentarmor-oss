@@ -21,6 +21,11 @@ func run(cmd string, args ...string) {
 	}
 }
 
+func runCheck(cmd string, args ...string) error {
+	// This helper does not ignore errors, unlike run().
+	return exec.Command(cmd, args...).Run()
+}
+
 func main() {
 	log.Println("🧱 AgentArmor Layer 2: Initializing Network Kill Switch...")
 
@@ -32,10 +37,17 @@ func main() {
 	var config FirewallConfig
 	yaml.Unmarshal(data, &config)
 
-	// 1. Create custom chain
+	// 1. Ensure our custom chain exists, creating it if it doesn't.
 	run("iptables", "-N", "AI_EGRESS")
-	run("iptables", "-A", "OUTPUT", "-j", "AI_EGRESS")
-	run("iptables", "-A", "AI_EGRESS", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+
+	// 2. Ensure we jump to it from the OUTPUT chain, but only add the rule once.
+	if err := runCheck("iptables", "-C", "OUTPUT", "-j", "AI_EGRESS"); err != nil {
+		run("iptables", "-A", "OUTPUT", "-j", "AI_EGRESS")
+	}
+
+	// 3. Flush any existing rules from our chain to ensure a clean slate.
+	run("iptables", "-F", "AI_EGRESS")
+	run("iptables", "-A", "AI_EGRESS", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT") // Must be first rule
 
 	// 2. Allow ALL Loopback & Docker Embedded DNS
 	// Docker DNS (127.0.0.11) uses DNAT to map port 53 to random high ports internally.
@@ -47,7 +59,7 @@ func main() {
 	run("iptables", "-A", "AI_EGRESS", "-p", "udp", "--dport", "53", "-j", "ACCEPT")
 	run("iptables", "-A", "AI_EGRESS", "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
 
-	// 3. Resolve and Allow external domains
+	// 4. Resolve and Allow external domains from firewall.yaml
 	for _, domain := range config.AllowedDomains {
 		ips, err := net.LookupIP(domain)
 		if err != nil {
@@ -63,7 +75,7 @@ func main() {
 		}
 	}
 
-	// 4. THE KILL SWITCH (Block everything else)
+	// 5. THE KILL SWITCH (Block everything else)
 	run("iptables", "-A", "AI_EGRESS", "-j", "DROP")
 
 	log.Println("🧱 Firewall Locked: All unauthorized outbound traffic will be dropped.")

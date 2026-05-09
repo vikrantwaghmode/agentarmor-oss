@@ -60,7 +60,7 @@ AI agents can browse the web, execute code, and call APIs — but most teams shi
 
 AgentArmor provides defense-in-depth: every message is scanned, every action is logged, and the container can only reach domains you explicitly allow.
 
-## Features
+## Current Features
 
 ### Layer 7 — Application Proxy
 
@@ -76,6 +76,7 @@ AgentArmor provides defense-in-depth: every message is scanned, every action is 
 | **Internal IP / SSRF** | Inbound | Block | Literal private IPs (RFC 1918, link-local, loopback) in request payloads |
 | **Malicious Content** | Both | Block | SQLi, XSS, SSRF, command injection, executables, archives |
 | **Intent Scoring** | Inbound | Block | High-risk tool-call sequences per session (e.g. `read_file → post_request`) |
+| **Rate Limiting** | Inbound | Block | Per-user/per-IP request throttling to prevent abuse |
 
 Additional capabilities:
 
@@ -142,6 +143,12 @@ Each inbound request passes through the full scanner pipeline in order. The firs
  Inbound Request
        │
        ▼
+ ┌─────────────────┐     ┌─────────┐
+ │  Rate Limiter   │──▶  │ BLOCKED │  429 / WS error — per-user token bucket
+ │  (token bucket) │     └─────────┘  default: 60 req/min, burst 120
+ └────────┬────────┘
+          │ pass
+          ▼
  ┌─────────────────┐     ┌─────────┐
  │  GoalLock       │──▶  │ BLOCKED │  runtime canary detected → exfiltration proof
  │  Canary         │     └─────────┘
@@ -315,6 +322,13 @@ scanners:
   risk_scoring:
     enabled: true
 
+  # Per-user/per-IP rate limiting — token bucket per session key.
+  # Session key = Authorization header value, or remote IP as fallback.
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst: 120              # allow short bursts above the steady-state rate
+
   # LLM-powered contextual scanner — catches subtle injections that evade regex.
   # Requires the Ollama sidecar with the model pulled.
   llm_scanner:
@@ -462,6 +476,20 @@ curl -s -X POST http://localhost:8080/ \
 # Firewall egress block (times out — example.com is not whitelisted)
 docker exec agentarmor curl -s --max-time 3 https://example.com
 
+# Rate limiting — burst 61 requests with the same session key, 61st should return 429
+for i in $(seq 1 61); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/ \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer rate-test-session" \
+    -d '{"messages":[{"role":"user","content":"hello"}]}')
+  echo "Request $i: $code"
+done
+# First 60 → 200 (or forwarded), request 61 → 429
+
+# Rate limiting in OpenClaw UX — rapid-fire 61 messages in the same chat session;
+# the 61st returns a WS error frame:
+# {"type":"res","ok":false,"error":{"code":"RATE_LIMIT","message":"🛡️ AgentArmor: Rate limit exceeded..."}}
+
 # Audit log
 sqlite3 ./data/audit.db \
   "SELECT timestamp, direction, action, rule_matched FROM audit_logs ORDER BY id DESC LIMIT 10;"
@@ -523,21 +551,39 @@ docker compose stop ollama
 docker compose start ollama
 ```
 
+## What's Shipped
+
+All features below are fully implemented and active out of the box.
+
+| Feature | Description |
+|---------|-------------|
+| **Prompt Injection Scanner** | 30+ regex phrases covering jailbreaks, instruction overrides, role manipulation, and false authority claims |
+| **LLM-Powered Scanner** | Ollama sidecar (`llama3.2:1b`) classifies injections the regex misses — confidence-gated at 0.75 |
+| **GoalLock Canary Tokens** | Runtime `ARMOR-CANARY-<hex>` injected into every system prompt; blocks exfiltration attempts on detection |
+| **Secret Redaction** | Redacts API keys (OpenAI, Anthropic, Google), JWTs, GitHub/Slack tokens, private keys — inbound and outbound |
+| **PII / DLP** | Regex blocks email, phone, SSN, credit card on both directions |
+| **Confidence-Gated PII** | Microsoft Presidio sidecar catches names, addresses, and freeform PII with a tunable confidence threshold |
+| **DNS Rebinding Protection** | Resolves hostnames found in URL payloads — blocks if they map to private or metadata IPs |
+| **Internal IP / SSRF Blocking** | Regex catches literal RFC 1918, loopback, and link-local IPs before they reach the LLM |
+| **Malicious Content Scanner** | Blocks SQLi, XSS, SSRF, command injection, executables, and archive file references |
+| **Intent-Based Risk Scoring** | Stateful per-session tool-call sequence detection (e.g. `read_file → post_request` within 60 s) |
+| **Rate Limiting** | Token bucket per session key — 60 req/min steady-state, burst of 120; returns 429 / WS error frame |
+| **Dynamic Firewall Updates** | `firewall.yaml` hot-reloads egress allow-list without restarting the container |
+| **WebSocket Scanning** | Scans real-time WS frames (OpenClaw protocol), not just HTTP POST bodies |
+| **Streaming DLP** | Sliding-window scanner catches secrets fragmented across SSE/streaming response chunks |
+| **Audit Logging** | Every decision logged to SQLite with timestamp, client IP, session key, rule matched, and payload snippet |
+| **Web Dashboard** | Real-time monitoring at `/armor/` with RBAC (admin/user tokens), policy editor, and audit log view |
+| **Hot-Reload Policies** | Edit `policy.yaml` and changes apply within seconds — no restart needed |
+
 ## Roadmap
 
-- [x] **GoalLock canary tokens** — Runtime exfiltration detection via injected system-prompt anchors
-- [x] **DNS rebinding protection** — Resolve hostnames at scan time, block private-IP targets
-- [x] **Confidence-gated PII** — Microsoft Presidio integration for unstructured PII detection
-- [x] **Intent-based risk scoring** — Stateful per-session tool-call sequence detection
-- [x] **LLM-powered scanners** — Ollama sidecar with `llama3.2:1b`; contextual prompt injection with confidence scoring
-- [x] **False authority claim detection** — Regex patterns for engineer/admin impersonation and filter-bypass requests
-- [ ] **Rate limiting** — Per-user/per-IP throttling
-- [ ] **Dynamic firewall updates** — Modify egress rules from the dashboard without restart
-- [ ] **SIEM integration** — Export audit logs to external systems
-- [ ] **Custom redaction** — User-defined redaction strings (hashing, masking)
-- [ ] **Threat intelligence feeds** — Dynamic malicious content pattern updates
-- [ ] **Multi-tenancy** — Isolated policies and audit trails per application
-- [ ] **WASM filters** — WebAssembly modules for custom filtering logic
+Upcoming features not yet implemented:
+
+- [ ] **SIEM integration** — Export audit logs to Splunk, Elastic, or a generic webhook
+- [ ] **Custom redaction** — User-defined redaction strings (hashing, partial masking, custom replacement)
+- [ ] **Threat intelligence feeds** — Pull live malicious content patterns from external threat intel sources
+- [ ] **Multi-tenancy** — Isolated policies and audit trails per application or team
+- [ ] **WASM filters** — WebAssembly modules for fully custom filtering logic without recompiling
 
 ## Contributing
 

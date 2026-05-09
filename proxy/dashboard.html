@@ -148,6 +148,16 @@ tr:hover td{background:var(--surface2)}
 .b-redacted{background:rgba(245,158,11,.15);color:var(--amber)}
 .b-allowed{background:rgba(34,197,94,.15);color:var(--green)}
 
+/* -- Delete Button -- */
+.btn-del {
+  background: none; border: none; color: var(--dim); cursor: pointer;
+  font-size: 16px; padding: 0 5px; line-height: 1;
+}
+.btn-del:hover { color: var(--red); }
+.role-user .btn-del { display: none; }
+
+
+
 /* -- Audit Log Details -- */
 tr.main-row { cursor: pointer; }
 .details-row { display: none; }
@@ -244,6 +254,7 @@ tr.main-row { cursor: pointer; }
       <div class="stat"><div class="stat-lbl">PII Rules</div><div class="stat-val" id="h-pii-rules">—</div></div>
       <div class="stat"><div class="stat-lbl">Malicious Rules</div><div class="stat-val" id="h-mc-rules">—</div></div>
       <div class="stat"><div class="stat-lbl">Firewall Domains</div><div class="stat-val" id="h-fw-domains">—</div></div>
+      <div class="stat"><div class="stat-lbl">Rate Limit (RPM)</div><div class="stat-val" id="h-rate-limit">—</div></div>
     </div>
   </div>
 
@@ -368,21 +379,27 @@ Save Policy</button>
 
   <!-- ── FIREWALL ── -->
   <div id="p-firewall" class="panel">
+    <div id="fw-alert" class="alert"></div>
     <div class="card">
       <div class="card-hdr">
         Layer 3/4 Firewall Rules
       </div>
       <div class="card-body">
         <div class="sec-title">Allowed Egress Domains</div>
-        <div class="domain-list" id="fw-list">
+        <div class="tags" id="fw-list">
           <!-- domains will be injected by JS -->
+        </div>
+        <div class="add-row">
+          <input type="text" id="fw-inp" placeholder="Add domain…" onkeydown="if(event.key==='Enter')addDomain()">
+          <button class="btn btn-p" onclick="addDomain()">Add</button>
         </div>
         <div class="domain-note">
           These are the only external domains the application container is allowed to contact.
-          All other outbound traffic is dropped. This is a read-only view of <code>firewall.yaml</code>.
+          All other outbound traffic is dropped. Changes are applied immediately upon saving.
         </div>
       </div>
     </div>
+    <div class="save-row"><button class="btn btn-ok" onclick="saveFirewall()">Save & Apply Firewall</button></div>
   </div>
 
 </div>
@@ -394,6 +411,7 @@ Save Policy</button>
 let policyState = {};
 let _dirty = false;
 const API_BASE = '/armor/api';
+let firewallState = { allowed_domains: [] };
 let authToken = localStorage.getItem('agentarmor_token');
 let userRole = 'none';
 let auditInterval = null; // For auto-refreshing audit log
@@ -442,6 +460,7 @@ async function loadHealth() {
   document.getElementById('h-pii-rules').textContent = data.rule_counts.pii;
   document.getElementById('h-mc-rules').textContent = data.rule_counts.malicious_content;
   document.getElementById('h-fw-domains').textContent = data.rule_counts.firewall_domains;
+  document.getElementById('h-rate-limit').textContent = data.rule_counts.rate_limit_rpm > 0 ? data.rule_counts.rate_limit_rpm : 'Off';
 }
 
 async function loadPolicy() {
@@ -528,17 +547,45 @@ async function loadAudit() {
 async function loadFirewall() {
   const res = await apiFetch('/firewall');
   if (!res) return;
-  const data = await res.json();
+  firewallState = await res.json();
+  renderFirewall();
+}
+
+function renderFirewall() {
   const list = document.getElementById('fw-list');
   list.innerHTML = '';
-  data.allowed_domains.forEach(d => {
+  if (!firewallState.allowed_domains) firewallState.allowed_domains = [];
+  firewallState.allowed_domains.forEach((d, i) => {
     list.innerHTML += `
-      <div class="domain">
-        <span class="domain-ico">✅</span>
-        <span class="domain-name">${d}</span>
+      <div class="tag">
+        <span>${d}</span>
+        <button class="btn-del" onclick="removeDomain(${i})">&times;</button>
       </div>
     `;
   });
+}
+
+function addDomain() {
+  const inp = document.getElementById('fw-inp');
+  if (inp.value.trim()) {
+    firewallState.allowed_domains.push(inp.value.trim());
+    inp.value = '';
+    renderFirewall();
+  }
+}
+
+function removeDomain(index) {
+  firewallState.allowed_domains.splice(index, 1);
+  renderFirewall();
+}
+
+async function saveFirewall() {
+  const res = await apiFetch('/firewall', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(firewallState)
+  });
+  showAlert(`Firewall rules saved and re-applied.`, res && res.ok ? 'ok' : 'err', document.getElementById('fw-alert'));
 }
 
 // ──────────────────────────────────────────────
@@ -628,8 +675,8 @@ async function savePolicy() {
   }
 }
 
-function showAlert(msg, type) {
-  const el = document.getElementById('pol-alert');
+function showAlert(msg, type, el) {
+  if (!el) el = document.getElementById('pol-alert');
   el.textContent = msg;
   el.className = `alert alert-${type}`;
   el.style.display = 'block';

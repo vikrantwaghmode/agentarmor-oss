@@ -17,6 +17,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -84,6 +85,11 @@ type Config struct {
 			ConfidenceThreshold float64 `yaml:"confidence_threshold" json:"confidence_threshold"`
 			TimeoutMs           int     `yaml:"timeout_ms" json:"timeout_ms"`
 		} `yaml:"llm_scanner" json:"llm_scanner"`
+		RateLimiting struct {
+			Enabled           bool `yaml:"enabled" json:"enabled"`
+			RequestsPerMinute int  `yaml:"requests_per_minute" json:"requests_per_minute"`
+			Burst             int  `yaml:"burst" json:"burst"`
+		} `yaml:"rate_limiting" json:"rate_limiting"`
 	} `yaml:"scanners" json:"scanners"`
 }
 
@@ -109,6 +115,7 @@ type ScannerRuleCounts struct {
 	InternalIPs      int `json:"internal_ips"`
 	CanaryTokens     int `json:"canary_tokens"`
 	FirewallDomains  int `json:"firewall_domains"`
+	RateLimitRpm     int `json:"rate_limit_rpm"`
 }
 
 var globalRuleCounts ScannerRuleCounts
@@ -191,6 +198,86 @@ var (
 	sessionHistory     = make(map[string]*SessionState)
 	sessionHistoryLock sync.RWMutex
 )
+
+// ──────────────────────────────────────────────
+// Rate Limiting (Token Bucket)
+// ──────────────────────────────────────────────
+
+type RateLimiter struct {
+	rate      float64 // requests per second
+	burst     float64
+	tokens    float64
+	lastCheck time.Time
+	mu        sync.Mutex
+}
+
+var (
+	rateLimiters    = make(map[string]*RateLimiter)
+	rateLimiterLock sync.RWMutex
+)
+
+func NewRateLimiter(r, b int) *RateLimiter {
+	return &RateLimiter{
+		rate:      float64(r) / 60.0, // convert requests per minute to per second
+		burst:     float64(b),
+		tokens:    float64(b),
+		lastCheck: time.Now(),
+	}
+}
+
+func (rl *RateLimiter) Allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(rl.lastCheck).Seconds()
+	rl.lastCheck = now
+
+	rl.tokens += elapsed * rl.rate
+	if rl.tokens > rl.burst {
+		rl.tokens = rl.burst
+	}
+
+	if rl.tokens >= 1 {
+		rl.tokens--
+		return true
+	}
+
+	return false
+}
+
+// checkRateLimit checks if a request from a given sessionKey is allowed.
+func checkRateLimit(sessionKey string) bool {
+	policyLock.RLock()
+	cfg := policy.Scanners.RateLimiting
+	policyLock.RUnlock()
+
+	if !cfg.Enabled || cfg.RequestsPerMinute <= 0 {
+		return true
+	}
+
+	rateLimiterLock.RLock()
+	limiter, exists := rateLimiters[sessionKey]
+	rateLimiterLock.RUnlock()
+
+	if !exists {
+		rateLimiterLock.Lock()
+		// Double-check after acquiring write lock
+		if l, ok := rateLimiters[sessionKey]; ok {
+			limiter = l
+		} else {
+			burst := cfg.Burst
+			if burst <= 0 {
+				burst = cfg.RequestsPerMinute // Default burst to be same as rate if not configured
+			}
+			limiter = NewRateLimiter(cfg.RequestsPerMinute, burst)
+			rateLimiters[sessionKey] = limiter
+		}
+		rateLimiterLock.Unlock()
+	}
+
+	return limiter.Allow()
+}
 
 // ──────────────────────────────────────────────
 // Audit Database
@@ -321,6 +408,14 @@ func getRole(r *http.Request) string {
 	return "none"
 }
 
+func getSessionKey(r *http.Request) string {
+	key := r.Header.Get("Authorization")
+	if key == "" {
+		key = r.RemoteAddr
+	}
+	return key
+}
+
 func loadPolicy() {
 	const policyPath = "policy.yaml"
 
@@ -402,6 +497,11 @@ func loadPolicy() {
 		}
 	}
 
+	// Set Rate Limit RPM for dashboard stats
+	if newPolicy.Scanners.RateLimiting.Enabled {
+		currentRuleCounts.RateLimitRpm = newPolicy.Scanners.RateLimiting.RequestsPerMinute
+	}
+
 	// Count Firewall domains
 	fwData, err := os.ReadFile("firewall.yaml")
 	if err == nil {
@@ -471,6 +571,24 @@ func cleanupSessionHistory() {
 			}
 		}
 		sessionHistoryLock.Unlock()
+	}
+}
+
+// cleanupRateLimiters periodically removes old entries from the rate limiter map.
+func cleanupRateLimiters() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		rateLimiterLock.Lock()
+		for key, limiter := range rateLimiters {
+			limiter.mu.Lock()
+			// If a user has been inactive for 15 mins, remove their limiter to save memory.
+			if time.Since(limiter.lastCheck) > 15*time.Minute {
+				delete(rateLimiters, key)
+			}
+			limiter.mu.Unlock()
+		}
+		rateLimiterLock.Unlock()
 	}
 }
 
@@ -1095,6 +1213,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 				"internal_ips":      ruleCounts.InternalIPs,
 				"canary_tokens":     ruleCounts.CanaryTokens,
 				"firewall_domains":  ruleCounts.FirewallDomains,
+				"rate_limit_rpm":    ruleCounts.RateLimitRpm,
 			},
 		})
 
@@ -1219,6 +1338,53 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(fw)
 
+	// POST /armor/api/firewall
+	case endpoint == "firewall" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+
+		var fwUpdate struct {
+			AllowedDomains []string `json:"allowed_domains"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&fwUpdate); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Sanitize input: remove empty strings and duplicates
+		seen := make(map[string]bool)
+		var cleanDomains []string
+		for _, d := range fwUpdate.AllowedDomains {
+			trimmed := strings.TrimSpace(d)
+			if trimmed != "" && !seen[trimmed] {
+				cleanDomains = append(cleanDomains, trimmed)
+				seen[trimmed] = true
+			}
+		}
+		fwUpdate.AllowedDomains = cleanDomains
+
+		data, err := yaml.Marshal(fwUpdate)
+		if err != nil {
+			http.Error(w, `{"error":"yaml marshal failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile("firewall.yaml", data, 0644); err != nil {
+			http.Error(w, `{"error":"write to firewall.yaml failed"}`, http.StatusInternalServerError)
+			return
+		}
+
+		// Re-apply firewall rules by executing the firewall binary
+		if err := exec.Command("./agentarmor-firewall").Run(); err != nil {
+			log.Printf("🔥 Error re-applying firewall rules: %v", err)
+			http.Error(w, `{"error":"firewall rules could not be applied, check logs"}`, http.StatusInternalServerError)
+			return
+		}
+
+		log.Println("🧱 Firewall rules updated and re-applied dynamically.")
+		w.Write([]byte(`{"ok":true}`))
+
 	default:
 		http.NotFound(w, r)
 	}
@@ -1318,11 +1484,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 	}
 	defer clientConn.Close()
 
-	// Use Authorization header as a session key for stateful analysis, fallback to remote address.
-	sessionKey := r.Header.Get("Authorization")
-	if sessionKey == "" {
-		sessionKey = r.RemoteAddr
-	}
+	sessionKey := getSessionKey(r)
 
 	log.Printf("🔌 WebSocket connected: %s", r.URL.Path)
 
@@ -1356,6 +1518,27 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 					log.Printf("🔌 Client WS read error: %v", err)
 				}
 				return
+			}
+
+			// --- Rate Limiting for WebSocket messages ---
+			if !checkRateLimit(sessionKey) {
+				logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "BLOCKED", "Rate Limit Exceeded", string(msg))
+				// Send an error frame back
+				var reqFrame struct {
+					ID string `json:"id"`
+				}
+				json.Unmarshal(msg, &reqFrame)
+				errFrame, _ := json.Marshal(map[string]interface{}{
+					"type": "res",
+					"id":   reqFrame.ID,
+					"ok":   false,
+					"error": map[string]string{
+						"code":    "RATE_LIMIT",
+						"message": "🛡️ AgentArmor: Rate limit exceeded. Please slow down.",
+					},
+				})
+				clientConn.WriteMessage(websocket.TextMessage, errFrame)
+				continue // keep the WebSocket alive
 			}
 
 			// Only scan text frames; binary frames pass through
@@ -1443,6 +1626,18 @@ func isWebSocketUpgrade(r *http.Request) bool {
 
 // handleRoot is the main request handler, routing between WebSocket and HTTP.
 func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, target *url.URL) {
+	sessionKey := getSessionKey(r)
+
+	// ──── Rate Limiting ────
+	if !checkRateLimit(sessionKey) {
+		logAuditEvent(r.RemoteAddr, sessionKey, "Request", "BLOCKED", "Rate Limit Exceeded", "")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "60") // Suggest waiting a minute
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error": "Rate limit exceeded, please try again later."}`))
+		return
+	}
+
 	// ──── WebSocket Upgrade ────
 	if isWebSocketUpgrade(r) {
 		handleWebSocket(w, r, target)
@@ -1451,19 +1646,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 
 	// ──── HTTP POST Scanner ────
 	if r.Method == http.MethodPost {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Error reading request body: %v", err)
-			http.Error(w, "Error reading request body", http.StatusInternalServerError)
-			return
-		}
+		bodyBytes, _ := io.ReadAll(r.Body)
 		payload := string(bodyBytes)
-
-		// Use Authorization header as a session key for stateful analysis, fallback to remote address.
-		sessionKey := r.Header.Get("Authorization")
-		if sessionKey == "" {
-			sessionKey = r.RemoteAddr
-		}
 
 		result := scanPayload(payload, "Request", sessionKey)
 
@@ -1613,6 +1797,7 @@ func main() {
 	loadPolicy()
 	go watchPolicyFile()
 	go cleanupSessionHistory()
+	go cleanupRateLimiters()
 
 	targetURL := os.Getenv("TARGET_URL")
 	if targetURL == "" {

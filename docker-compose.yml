@@ -28,6 +28,12 @@ services:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
       - "5000:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12          # up to 2 min for NLP model load
+      start_period: 30s
 
   ollama:
     image: ollama/ollama:latest
@@ -35,6 +41,12 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
 volumes:
   ollama_data:

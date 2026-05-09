@@ -105,7 +105,7 @@ scanners:
       - rule: '\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b'
         enabled: true
     advanced_pii:
-      enabled: false
+      enabled: true
       url: "http://presidio-analyzer:5000/analyze"
       confidence_threshold: 0.75
 
@@ -143,6 +143,12 @@ scanners:
 
   risk_scoring:
     enabled: true
+
+  # New: Per-user/per-IP rate limiting.
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst: 120 # Allow bursts of up to 120 requests
 
   # LLM-powered contextual prompt injection scanner (Ollama sidecar).
   # Catches subtle injections that don't match any fixed phrase above.
