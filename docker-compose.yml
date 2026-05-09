@@ -23,3 +23,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    ports:
+      - "5000:5000"
