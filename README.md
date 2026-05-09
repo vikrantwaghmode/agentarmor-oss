@@ -1,15 +1,17 @@
 <p align="center">
-  <h1 align="center">🛡️ AgentArmor</h1>
-  <p align="center">
-    <strong>A two-layer security proxy for LLM-powered applications</strong>
-  </p>
-  <p align="center">
-    <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
-    <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24">
-    <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
-    <img src="https://img.shields.io/badge/layer_7-application_proxy-8B5CF6?style=flat-square" alt="Layer 7">
-    <img src="https://img.shields.io/badge/layer_3/4-network_firewall-EF4444?style=flat-square" alt="Layer 3/4">
-  </p>
+  <img src="assets/logo.png" alt="AgentArmor" width="120" />
+</p>
+
+<p align="center">
+  <img src="assets/banner.png" alt="AgentArmor — Defense-in-depth for AI agents" width="720" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
+  <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24">
+  <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/layer_7-application_proxy-8B5CF6?style=flat-square" alt="Layer 7">
+  <img src="https://img.shields.io/badge/layer_3/4-network_firewall-EF4444?style=flat-square" alt="Layer 3/4">
 </p>
 
 ---
@@ -72,6 +74,7 @@ AgentArmor provides defense-in-depth: every message is scanned, every action is 
 | **Internal IP / SSRF** | Inbound | Block | Literal private IPs (RFC 1918, link-local, loopback) in request payloads |
 | **Malicious Content** | Both | Block | SQLi, XSS, SSRF, command injection, executables, archives |
 | **Intent Scoring** | Inbound | Block | High-risk tool-call sequences per session (e.g. `read_file → post_request`) |
+| **LLM Scanner** | Inbound | Block | Subtle prompt injections that evade regex — classified by a local Ollama model with confidence scoring |
 
 Additional capabilities:
 
@@ -283,6 +286,16 @@ scanners:
   # Sequences and time windows are defined in proxy/main.go.
   risk_scoring:
     enabled: true
+
+  # LLM-powered contextual prompt injection scanner (Ollama sidecar).
+  # Catches subtle injections that don't match any fixed phrase.
+  # Set enabled: true after pulling the model and adding "ollama" to firewall.yaml.
+  llm_scanner:
+    enabled: false
+    url: "http://ollama:11434"
+    model: "llama3.2:1b"
+    confidence_threshold: 0.85
+    timeout_ms: 1500
 ```
 
 ### GoalLock Canary — runtime token
@@ -331,9 +344,13 @@ agentarmor-oss/
 ├── .env.template              # Environment variable template
 ├── policy.yaml                # Security scanner rules (hot-reloadable)
 ├── firewall.yaml              # Allowed egress domains
+├── assets/
+│   ├── logo.png               # Shield icon (used in README + dashboard favicon)
+│   └── banner.png             # Hero banner image
 ├── proxy/
 │   ├── main.go                # Reverse proxy, all scanners, WebSocket handler, audit log
 │   ├── firewall.go            # iptables egress firewall setup
+│   ├── dashboard.html         # Embedded web dashboard (logo baked in as base64)
 │   ├── go.mod
 │   └── go.sum
 ├── data/                      # Audit database (auto-created)
@@ -453,7 +470,7 @@ docker compose stop presidio-analyzer
 - [x] **DNS rebinding protection** — Resolve hostnames at scan time, block private-IP targets
 - [x] **Confidence-gated PII** — Microsoft Presidio integration for unstructured PII detection
 - [x] **Intent-based risk scoring** — Stateful per-session tool-call sequence detection
-- [ ] **LLM-powered scanners** — Local model for contextual prompt injection detection beyond regex
+- [x] **LLM-powered scanners** — Ollama sidecar with `llama3.2:1b`; contextual prompt injection classification with confidence scoring
 - [ ] **Rate limiting** — Per-user/per-IP throttling
 - [ ] **Dynamic firewall updates** — Modify egress rules from the dashboard without restart
 - [ ] **SIEM integration** — Export audit logs to external systems

@@ -28,3 +28,13 @@ services:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
       - "5000:5000"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:

@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y gcc libsqlite3-dev && rm -rf /var/lib/a
 
 WORKDIR /src
 COPY proxy/ ./proxy/
+# policy.yaml is //go:embed-ed by main.go, so it must live next to it at build time
+COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
