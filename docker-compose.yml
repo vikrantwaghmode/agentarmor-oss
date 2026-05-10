@@ -18,8 +18,11 @@ services:
       - ./data:/app/data                # Audit logs (SQLite)
       - ./config:/data/.openclaw        # OpenClaw state & config
       - ./workspace:/data/workspace     # OpenClaw workspace
+      # Mount our custom security skill into OpenClaw's plugin directory.
+      - ./openclaw-plugins:/app/openclaw/dist/custom-plugins
       - ./policy.yaml:/app/policy.yaml  # Live-reloadable policy
       - ./firewall.yaml:/app/firewall.yaml
+      - ./skills:/app/skills            # Live-editable skill definitions + RAG docs
     restart: unless-stopped
     env_file:
       - .env

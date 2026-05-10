@@ -39,7 +39,7 @@ COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go \
+    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go \
     && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./firewall.go
 
 # --- Stage 3: Final runtime ---
@@ -75,6 +75,9 @@ COPY --from=proxy-build /agentarmor-firewall /app/agentarmor-firewall
 # Copy config files
 COPY policy.yaml /app/policy.yaml
 COPY firewall.yaml /app/firewall.yaml
+
+# Copy default skills (volume-mounted at runtime for live updates)
+COPY skills/ /app/skills/
 
 # Copy the entrypoint
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh

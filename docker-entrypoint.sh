@@ -59,6 +59,9 @@ if [ "$LLM_PROVIDER" = "openclaw" ]; then
     "entries": {
       "google": {
         "enabled": true
+      },
+      "custom-plugins/security-tools": {
+        "enabled": true
       }
     }
   }

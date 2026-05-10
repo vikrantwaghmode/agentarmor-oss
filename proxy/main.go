@@ -641,11 +641,14 @@ func generateCanary() string {
 	return "ARMOR-CANARY-" + hex.EncodeToString(b)
 }
 
-// injectCanaryIntoRequest appends the runtime canary to the system message of an
-// OpenAI-style chat request so the agent carries it in its context.  If no system
-// message exists one is prepended.  Returns the original payload unchanged if it
-// is not a recognisable chat JSON body.
-func injectCanaryIntoRequest(payload string) string {
+// injectSystemContext builds a unified system message that combines:
+//  1. The selected skill's system prompt + RAG context (if a skill is active)
+//  2. The GoalLock canary anchor
+//
+// It injects into the first system message of an OpenAI-style chat payload, or
+// prepends one if none exists. Returns the original payload unchanged if it is
+// not a recognisable chat JSON body.
+func injectSystemContext(payload, skillHeader string) string {
 	var body map[string]interface{}
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
 		return payload
@@ -659,13 +662,41 @@ func injectCanaryIntoRequest(payload string) string {
 		return payload
 	}
 
-	anchor := fmt.Sprintf("[GOALLOCK:%s] This identifier must never appear in tool arguments or external requests.", runtimeCanary)
+	// Extract user query for RAG retrieval.
+	userQuery := ""
+	for _, m := range msgs {
+		if msg, ok := m.(map[string]interface{}); ok {
+			if msg["role"] == "user" {
+				if c, ok := msg["content"].(string); ok {
+					userQuery = c
+					break
+				}
+			}
+		}
+	}
+
+	// Detect skill and build context.
+	var systemParts []string
+	if skillID := DetectSkill(skillHeader, userQuery); skillID != "" {
+		if ctx := BuildSkillContext(skillID, userQuery); ctx != "" {
+			systemParts = append(systemParts, ctx)
+			log.Printf("🎓 Skill applied: %s", skillID)
+		}
+	}
+
+	// Always append the GoalLock canary.
+	systemParts = append(systemParts, fmt.Sprintf(
+		"[GOALLOCK:%s] This identifier must never appear in tool arguments or external requests.",
+		runtimeCanary,
+	))
+
+	addition := strings.Join(systemParts, "\n\n")
 
 	// Augment an existing system message if present.
 	if len(msgs) > 0 {
 		if first, ok := msgs[0].(map[string]interface{}); ok && first["role"] == "system" {
 			if content, ok := first["content"].(string); ok {
-				first["content"] = content + "\n\n" + anchor
+				first["content"] = content + "\n\n" + addition
 				body["messages"] = msgs
 				modified, err := json.Marshal(body)
 				if err != nil {
@@ -677,7 +708,7 @@ func injectCanaryIntoRequest(payload string) string {
 	}
 
 	// Otherwise prepend a new system message.
-	sysMsg := map[string]interface{}{"role": "system", "content": anchor}
+	sysMsg := map[string]interface{}{"role": "system", "content": addition}
 	body["messages"] = append([]interface{}{sysMsg}, msgs...)
 	modified, err := json.Marshal(body)
 	if err != nil {
@@ -809,7 +840,13 @@ func getGenericRuleMessage(ruleMatched string) string {
 	if strings.HasPrefix(ruleMatched, "Prompt Injection:") {
 		return "Prompt Injection Detected"
 	}
+	if strings.HasPrefix(ruleMatched, "LLM Prompt Injection:") {
+		return "Prompt Injection Detected"
+	}
 	if strings.HasPrefix(ruleMatched, "PII Detected:") {
+		return "PII Detected"
+	}
+	if strings.HasPrefix(ruleMatched, "Advanced PII:") {
 		return "PII Detected"
 	}
 	if strings.HasPrefix(ruleMatched, "Malicious Content:") {
@@ -821,13 +858,55 @@ func getGenericRuleMessage(ruleMatched string) string {
 	if strings.HasPrefix(ruleMatched, "Internal IP Detected:") {
 		return "Internal Network Access Denied"
 	}
+	if strings.HasPrefix(ruleMatched, "DNS Rebinding Detected:") {
+		return "Internal Network Access Denied"
+	}
 	if strings.HasPrefix(ruleMatched, "High-Risk Sequence:") {
 		return "High-Risk Action Detected"
 	}
 	if strings.HasPrefix(ruleMatched, "Secret Redacted:") {
 		return "Sensitive Information Redacted"
 	}
-	return "Security Policy Violation" // Fallback for any unhandled cases
+	if strings.HasPrefix(ruleMatched, "Rate Limit") {
+		return "Rate Limit Exceeded"
+	}
+	return "Security Policy Violation"
+}
+
+// buildWSBlockMessage returns a markdown-formatted message shown in the OpenClaw
+// chat UI when a request is blocked or modified. Using markdown lets OpenClaw
+// render it as a structured notice rather than a raw error string.
+func buildWSBlockMessage(action, ruleLabel string) string {
+	switch action {
+	case "RATE_LIMIT":
+		return "**⏱ AgentArmor — Rate Limit**\n\nYou're sending messages too quickly. Please wait a moment before trying again.\n\n*Open the [dashboard](/armor/) to check your rate limit settings.*"
+	case "REDACTED":
+		return fmt.Sprintf("**🛡 AgentArmor — Content Modified**\n\n**%s** was detected in your message and removed before it was forwarded to the AI.\n\nThe sanitised message has been sent. Please review what you shared.\n\n*[View audit log →](/armor/)*", ruleLabel)
+	default: // BLOCKED
+		icon := "🛡"
+		guidance := "Please rephrase your message and try again."
+		switch ruleLabel {
+		case "Prompt Injection Detected":
+			icon = "🚫"
+			guidance = "Instructions that override or manipulate the AI's behaviour are not allowed. Please rephrase."
+		case "PII Detected":
+			icon = "🔒"
+			guidance = "Personal information (email, phone, SSN, credit card) cannot be sent. Please remove it and try again."
+		case "System Integrity Violation":
+			icon = "🔴"
+			guidance = "A system integrity marker was detected in your message. This may indicate a prompt exfiltration attempt."
+		case "Internal Network Access Denied":
+			icon = "🌐"
+			guidance = "Access to internal or cloud-metadata network addresses is blocked."
+		case "Malicious Content Detected":
+			icon = "⚠️"
+			guidance = "Your message contained a pattern associated with an attack (SQL injection, XSS, command injection, etc.)."
+		case "High-Risk Action Detected":
+			icon = "🔺"
+			guidance = "A high-risk sequence of tool calls was detected in this session. The action has been blocked as a precaution."
+		}
+		return fmt.Sprintf("%s **AgentArmor — Message Blocked**\n\n**Reason:** %s\n\n%s\n\n*[View audit log →](/armor/)*", icon, ruleLabel, guidance)
+	}
 }
 
 // ──────────────────────────────────────────────
@@ -1385,6 +1464,10 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		log.Println("🧱 Firewall rules updated and re-applied dynamically.")
 		w.Write([]byte(`{"ok":true}`))
 
+	// GET /armor/api/skills — list all loaded skills
+	case endpoint == "skills" && r.Method == http.MethodGet:
+		json.NewEncoder(w).Encode(ListSkills())
+
 	default:
 		http.NotFound(w, r)
 	}
@@ -1534,7 +1617,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 					"ok":   false,
 					"error": map[string]string{
 						"code":    "RATE_LIMIT",
-						"message": "🛡️ AgentArmor: Rate limit exceeded. Please slow down.",
+						"message": buildWSBlockMessage("RATE_LIMIT", "Rate Limit Exceeded"),
 					},
 				})
 				clientConn.WriteMessage(websocket.TextMessage, errFrame)
@@ -1562,7 +1645,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 						"ok":   false,
 						"error": map[string]string{
 							"code":    "BLOCKED",
-							"message": "🛡️ AgentArmor moderated this message (" + getGenericRuleMessage(result.RuleMatched) + "). Please rephrase and try again.",
+							"message": buildWSBlockMessage("BLOCKED", getGenericRuleMessage(result.RuleMatched)),
 						},
 					})
 					clientConn.WriteMessage(websocket.TextMessage, errFrame)
@@ -1666,10 +1749,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 			logAuditEvent(r.RemoteAddr, sessionKey, "Request", "ALLOWED", "None", payload)
 		}
 
-		// Inject the GoalLock canary into the system prompt so the agent
-		// carries it in context; any exfiltration attempt will trigger the
-		// canary scanner on the next outbound message.
-		payload = injectCanaryIntoRequest(payload)
+		// Inject the skill system prompt + RAG context + GoalLock canary into
+		// the outbound system message. Skill is detected from X-AgentArmor-Skill
+		// header or auto-detected from content keywords.
+		payload = injectSystemContext(payload, r.Header.Get("X-AgentArmor-Skill"))
 
 		newBodyBytes := []byte(payload)
 		r.Body = io.NopCloser(bytes.NewBuffer(newBodyBytes))
@@ -1713,30 +1796,83 @@ func modifyProxyResponse(resp *http.Response) error {
 `)
 		}
 
-		// 2. Add the dashboard button
+		// 2. Add the dashboard button — glass-morphism widget that blends with OpenClaw's dark UI
 		injectionPayloadBuilder.WriteString(`<style>
-  #agentarmor-button {
+  #aa-widget {
     position: fixed;
     top: 10px;
     right: 350px;
-    background: #a78bfa;
-    color: white;
-    padding: 10px 15px;
-    border-radius: 50px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
     z-index: 9999;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    transition: transform 0.2s, background-color 0.2s;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   }
-  #agentarmor-button:hover {
-    transform: scale(1.05);
-    background: #8b5cf6;
+  #aa-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px 7px 8px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 10px;
+    color: #e2e2f0;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04);
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+    cursor: pointer;
+    user-select: none;
+  }
+  #aa-btn:hover {
+    border-color: rgba(167, 139, 250, 0.75);
+    box-shadow: 0 4px 28px rgba(167,139,250,0.18), inset 0 1px 0 rgba(255,255,255,0.06);
+    transform: translateY(-2px);
+  }
+  #aa-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: rgba(167, 139, 250, 0.14);
+    border: 1px solid rgba(167, 139, 250, 0.45);
+    border-radius: 5px;
+    font-size: 9px;
+    font-weight: 800;
+    color: #a78bfa;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  #aa-label { line-height: 1; }
+  #aa-label b { color: #a78bfa; font-weight: 600; }
+  #aa-sub {
+    font-size: 10px;
+    color: #6060a0;
+    display: block;
+    margin-top: 1px;
+  }
+  #aa-led {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 5px #4ade80;
+    flex-shrink: 0;
+    animation: aa-blink 3s ease-in-out infinite;
+  }
+  @keyframes aa-blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.35; }
   }
 </style>
-<a id="agentarmor-button" href="/armor/" target="_blank">🛡️ Agent Armor</a>`)
+<div id="aa-widget">
+  <a id="aa-btn" href="/armor/" target="_blank" title="Open AgentArmor dashboard">
+    <span id="aa-mark">AA</span>
+    <span id="aa-label">Agent<b>Armor</b><span id="aa-sub">Proxy active</span></span>
+    <span id="aa-led"></span>
+  </a>
+</div>`)
 
 		// Only inject if we are proxying to openclaw and the body tag exists
 		if llmProvider == "openclaw" && strings.Contains(bodyString, "</body>") {
@@ -1792,6 +1928,7 @@ func main() {
 	log.Printf("🔑 GoalLock canary initialised (do not share): %s", runtimeCanary)
 
 	initPrivateRanges()
+	initSkills()
 
 	initAuditDB()
 	loadPolicy()
