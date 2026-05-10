@@ -873,39 +873,32 @@ func getGenericRuleMessage(ruleMatched string) string {
 	return "Security Policy Violation"
 }
 
-// buildWSBlockMessage returns a markdown-formatted message shown in the OpenClaw
-// chat UI when a request is blocked or modified. Using markdown lets OpenClaw
-// render it as a structured notice rather than a raw error string.
+// buildWSBlockMessage returns the message shown in the OpenClaw chat when a
+// request is blocked or modified. Uses markdown so OpenClaw renders it as a
+// structured notice. Purple theme via shield icon + bold labels; no "error" word.
 func buildWSBlockMessage(action, ruleLabel string) string {
 	switch action {
 	case "RATE_LIMIT":
-		return "**⏱ AgentArmor — Rate Limit**\n\nYou're sending messages too quickly. Please wait a moment before trying again.\n\n*Open the [dashboard](/armor/) to check your rate limit settings.*"
+		return "**⬡ AgentArmor — Rate Limited**\n\n**Reason:** Too many requests in a short window.\n\nPlease slow down and try again in a moment."
 	case "REDACTED":
-		return fmt.Sprintf("**🛡 AgentArmor — Content Modified**\n\n**%s** was detected in your message and removed before it was forwarded to the AI.\n\nThe sanitised message has been sent. Please review what you shared.\n\n*[View audit log →](/armor/)*", ruleLabel)
+		return fmt.Sprintf("**⬡ AgentArmor — Content Modified**\n\n**Detected:** %s\n\nSensitive content was stripped before forwarding. The sanitised message has been sent — please review what you shared.", ruleLabel)
 	default: // BLOCKED
-		icon := "🛡"
 		guidance := "Please rephrase your message and try again."
 		switch ruleLabel {
 		case "Prompt Injection Detected":
-			icon = "🚫"
-			guidance = "Instructions that override or manipulate the AI's behaviour are not allowed. Please rephrase."
+			guidance = "Instructions that attempt to override or manipulate the AI's behaviour are not permitted."
 		case "PII Detected":
-			icon = "🔒"
-			guidance = "Personal information (email, phone, SSN, credit card) cannot be sent. Please remove it and try again."
+			guidance = "Personal information (email, phone, SSN, credit card) cannot be included in messages."
 		case "System Integrity Violation":
-			icon = "🔴"
-			guidance = "A system integrity marker was detected in your message. This may indicate a prompt exfiltration attempt."
+			guidance = "A system anchor was detected — this may indicate a context-exfiltration attempt."
 		case "Internal Network Access Denied":
-			icon = "🌐"
-			guidance = "Access to internal or cloud-metadata network addresses is blocked."
+			guidance = "Access to internal or cloud-metadata addresses is blocked."
 		case "Malicious Content Detected":
-			icon = "⚠️"
-			guidance = "Your message contained a pattern associated with an attack (SQL injection, XSS, command injection, etc.)."
+			guidance = "Your message matched a pattern associated with an attack (SQLi, XSS, command injection, etc.)."
 		case "High-Risk Action Detected":
-			icon = "🔺"
-			guidance = "A high-risk sequence of tool calls was detected in this session. The action has been blocked as a precaution."
+			guidance = "A high-risk tool-call sequence was detected in this session and blocked as a precaution."
 		}
-		return fmt.Sprintf("%s **AgentArmor — Message Blocked**\n\n**Reason:** %s\n\n%s\n\n*[View audit log →](/armor/)*", icon, ruleLabel, guidance)
+		return fmt.Sprintf("**⬡ AgentArmor — Message Blocked**\n\n**Reason:** %s\n\n%s", ruleLabel, guidance)
 	}
 }
 
@@ -1872,7 +1865,66 @@ func modifyProxyResponse(resp *http.Response) error {
     <span id="aa-label">Agent<b>Armor</b><span id="aa-sub">Proxy active</span></span>
     <span id="aa-led"></span>
   </a>
-</div>`)
+</div>
+<style>
+/* ── AgentArmor moderation message card ── */
+.aa-notice {
+  display: block;
+  background: rgba(147, 51, 234, 0.10);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-left: 3px solid #a855f7;
+  border-radius: 6px;
+  padding: 11px 14px;
+  margin: 2px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #d4c5fa;
+  white-space: pre-wrap;
+}
+.aa-notice strong { color: #c4b5fd; font-weight: 600; }
+.aa-notice em     { color: #a78bfa; font-style: normal; }
+</style>
+<script>
+(function () {
+  /* Purple-card styling for AgentArmor notices injected into OpenClaw chat */
+  const MARKER = '⬡ AgentArmor';
+
+  function applyStyle(el) {
+    if (el.__aaStyled) return;
+    el.__aaStyled = true;
+    el.classList.add('aa-notice');
+    /* Convert **bold** and *italic* markdown to styled spans */
+    el.innerHTML = el.innerHTML
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g,     '<em>$1</em>');
+  }
+
+  function scanNode(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.textContent.includes(MARKER)) continue;
+      /* Walk up to find a reasonably-sized container */
+      let el = node.parentElement;
+      for (let i = 0; i < 10 && el; i++) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 160 && r.height > 0) { applyStyle(el); break; }
+        el = el.parentElement;
+      }
+    }
+  }
+
+  const obs = new MutationObserver(muts => {
+    muts.forEach(m => m.addedNodes.forEach(n => {
+      if (n.nodeType === 1) scanNode(n);
+    }));
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+  /* Initial scan in case messages already exist */
+  setTimeout(() => scanNode(document.body), 800);
+})();
+</script>`)
 
 		// Only inject if we are proxying to openclaw and the body tag exists
 		if llmProvider == "openclaw" && strings.Contains(bodyString, "</body>") {
