@@ -90,6 +90,34 @@ type Config struct {
 			RequestsPerMinute int  `yaml:"requests_per_minute" json:"requests_per_minute"`
 			Burst             int  `yaml:"burst" json:"burst"`
 		} `yaml:"rate_limiting" json:"rate_limiting"`
+		AutoRepave struct {
+			Enabled  bool `yaml:"enabled" json:"enabled"`
+			Triggers struct {
+				CanaryDetections int `yaml:"canary_detections" json:"canary_detections"`
+				RiskSequences    int `yaml:"risk_sequences" json:"risk_sequences"`
+				WindowMinutes    int `yaml:"window_minutes" json:"window_minutes"`
+			} `yaml:"triggers" json:"triggers"`
+			Actions struct {
+				KillSessions bool `yaml:"kill_sessions" json:"kill_sessions"`
+				RotateCanary bool `yaml:"rotate_canary" json:"rotate_canary"`
+			} `yaml:"actions" json:"actions"`
+		} `yaml:"auto_repave" json:"auto_repave"`
+		AnomalyScoring struct {
+			Enabled        bool    `yaml:"enabled" json:"enabled"`
+			AlertThreshold float64 `yaml:"alert_threshold" json:"alert_threshold"`
+			BlockThreshold float64 `yaml:"block_threshold" json:"block_threshold"`
+		} `yaml:"anomaly_scoring" json:"anomaly_scoring"`
+		ZeroTrustTools struct {
+			Enabled              bool     `yaml:"enabled" json:"enabled"`
+			HighRiskTools        []string `yaml:"high_risk_tools" json:"high_risk_tools"`
+			AutoDenyAfterMinutes int      `yaml:"auto_deny_after_minutes" json:"auto_deny_after_minutes"`
+		} `yaml:"zero_trust_tools" json:"zero_trust_tools"`
+		BlastRadius struct {
+			Enabled                   bool `yaml:"enabled" json:"enabled"`
+			MaxToolCallsPerSession     int  `yaml:"max_tool_calls_per_session" json:"max_tool_calls_per_session"`
+			MaxBlocksPerSession        int  `yaml:"max_blocks_per_session" json:"max_blocks_per_session"`
+			MaxHighRiskCallsPerSession int  `yaml:"max_high_risk_calls_per_session" json:"max_high_risk_calls_per_session"`
+		} `yaml:"blast_radius" json:"blast_radius"`
 	} `yaml:"scanners" json:"scanners"`
 }
 
@@ -176,7 +204,18 @@ type AgentEvent struct {
 }
 
 type SessionState struct {
-	Events []AgentEvent
+	Events       []AgentEvent
+	ToolCounts          map[string]int
+	ApprovedTools       map[string]bool
+	DeniedTools         map[string]bool
+	TotalToolCalls      int
+	TotalBlocks         int
+	HighRiskToolCalls   int
+	BlastRadiusHit      bool
+	AnomalyScore        float64
+	AnomalyFlags        []string
+	FirstSeen           time.Time
+	LastSeen            time.Time
 }
 
 type riskPattern struct {
@@ -245,6 +284,342 @@ func rotateCanary() string {
 	runtimeCanary = newCanary
 	log.Printf("🔑 GoalLock canary rotated: %s", newCanary)
 	return newCanary
+}
+
+// killSession terminates a single session by key without affecting others.
+func killSession(key string) {
+	activeWSConnsLock.Lock()
+	if conn, ok := activeWSConns[key]; ok {
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "Blast radius cap exceeded — session terminated by AgentArmor"))
+		conn.Close()
+		delete(activeWSConns, key)
+	}
+	activeWSConnsLock.Unlock()
+	sessionHistoryLock.Lock()
+	delete(sessionHistory, key)
+	sessionHistoryLock.Unlock()
+	log.Printf("🛑 Blast radius: terminated session %s", key[:min(12, len(key))])
+}
+
+// ──────────────────────────────────────────────
+// Zero-Trust Tool Approvals
+// ──────────────────────────────────────────────
+
+type ToolApprovalRequest struct {
+	ID          string `json:"id"`
+	SessionKey  string `json:"-"`            // full key, not sent to dashboard
+	DisplayKey  string `json:"session_key"`  // truncated for display
+	Tool        string `json:"tool"`
+	RequestedAt string `json:"requested_at"`
+	Status      string `json:"status"` // pending | approved | denied
+}
+
+var (
+	toolApprovals     = make(map[string]*ToolApprovalRequest)
+	toolApprovalsLock sync.RWMutex
+)
+
+func isHighRiskTool(tool string) bool {
+	policyLock.RLock()
+	defer policyLock.RUnlock()
+	for _, t := range policy.Scanners.ZeroTrustTools.HighRiskTools {
+		if strings.EqualFold(t, tool) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestToolApproval queues an approval request and returns its ID.
+// If a pending request already exists for this session+tool, returns the existing ID.
+func requestToolApproval(sessionKey, tool string) string {
+	toolApprovalsLock.Lock()
+	defer toolApprovalsLock.Unlock()
+	for id, req := range toolApprovals {
+		if req.SessionKey == sessionKey && req.Tool == tool && req.Status == "pending" {
+			return id
+		}
+	}
+	display := sessionKey
+	if len(display) > 16 {
+		display = display[:16] + "…"
+	}
+	id := fmt.Sprintf("%x", time.Now().UnixNano())[:12]
+	toolApprovals[id] = &ToolApprovalRequest{
+		ID:          id,
+		SessionKey:  sessionKey,
+		DisplayKey:  display,
+		Tool:        tool,
+		RequestedAt: time.Now().Format(time.RFC3339),
+		Status:      "pending",
+	}
+	log.Printf("🔐 Zero-trust: approval required for tool '%s' (session %s, id=%s)", tool, display, id)
+	go addAlert("TOOL_APPROVAL_REQUIRED",
+		fmt.Sprintf("Session %s requests approval for high-risk tool '%s' — approve in the Repave tab", display, tool))
+	return id
+}
+
+// approveToolRequest marks a request approved and adds the tool to the session's allowed set.
+func approveToolRequest(id string) bool {
+	toolApprovalsLock.Lock()
+	req, ok := toolApprovals[id]
+	if !ok || req.Status != "pending" {
+		toolApprovalsLock.Unlock()
+		return false
+	}
+	req.Status = "approved"
+	sessionKey := req.SessionKey
+	tool := req.Tool
+	toolApprovalsLock.Unlock()
+
+	sessionHistoryLock.Lock()
+	if state, ok := sessionHistory[sessionKey]; ok {
+		if state.ApprovedTools == nil {
+			state.ApprovedTools = make(map[string]bool)
+		}
+		state.ApprovedTools[tool] = true
+	}
+	sessionHistoryLock.Unlock()
+	log.Printf("✅ Zero-trust: approved tool '%s' for session", tool)
+	return true
+}
+
+// denyToolRequest marks a request denied and adds the tool to the session's denied set.
+func denyToolRequest(id string) bool {
+	toolApprovalsLock.Lock()
+	req, ok := toolApprovals[id]
+	if !ok || req.Status != "pending" {
+		toolApprovalsLock.Unlock()
+		return false
+	}
+	req.Status = "denied"
+	sessionKey := req.SessionKey
+	tool := req.Tool
+	toolApprovalsLock.Unlock()
+
+	sessionHistoryLock.Lock()
+	if state, ok := sessionHistory[sessionKey]; ok {
+		if state.DeniedTools == nil {
+			state.DeniedTools = make(map[string]bool)
+		}
+		state.DeniedTools[tool] = true
+	}
+	sessionHistoryLock.Unlock()
+	log.Printf("🚫 Zero-trust: denied tool '%s' for session", tool)
+	return true
+}
+
+// cleanupExpiredApprovals auto-denies requests older than the configured timeout.
+func cleanupExpiredApprovals() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		policyLock.RLock()
+		timeout := time.Duration(max(policy.Scanners.ZeroTrustTools.AutoDenyAfterMinutes, 1)) * time.Minute
+		policyLock.RUnlock()
+		cutoff := time.Now().Add(-timeout)
+		toolApprovalsLock.Lock()
+		for id, req := range toolApprovals {
+			if req.Status == "pending" {
+				t, _ := time.Parse(time.RFC3339, req.RequestedAt)
+				if t.Before(cutoff) {
+					req.Status = "denied"
+					log.Printf("⏱ Zero-trust: auto-denied tool '%s' after timeout (session %s)", req.Tool, req.DisplayKey)
+					_ = id
+				}
+			}
+		}
+		toolApprovalsLock.Unlock()
+	}
+}
+
+// ──────────────────────────────────────────────
+// Alerts (in-memory ring buffer, polled by dashboard)
+// ──────────────────────────────────────────────
+
+type Alert struct {
+	ID        int    `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Message   string `json:"message"`
+	Read      bool   `json:"read"`
+}
+
+var (
+	alerts     []Alert
+	alertsLock sync.Mutex
+	alertIDSeq int
+)
+
+func addAlert(alertType, message string) {
+	alertsLock.Lock()
+	defer alertsLock.Unlock()
+	alertIDSeq++
+	alerts = append([]Alert{{
+		ID:        alertIDSeq,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Type:      alertType,
+		Message:   message,
+	}}, alerts...)
+	if len(alerts) > 50 {
+		alerts = alerts[:50]
+	}
+	log.Printf("🚨 ALERT [%s]: %s", alertType, message)
+}
+
+// ──────────────────────────────────────────────
+// Automated Repave Trigger
+// ──────────────────────────────────────────────
+
+type repaveEvent struct {
+	Timestamp time.Time
+	Trigger   string
+}
+
+var (
+	repaveEventLog  []repaveEvent
+	repaveEventLock sync.Mutex
+	repaveFired     bool
+	repaveFiredAt   time.Time
+)
+
+// recordRepaveEvent increments the rolling counter. If thresholds are met,
+// fires an auto-repave in a background goroutine.
+func recordRepaveEvent(trigger string) {
+	policyLock.RLock()
+	cfg := policy.Scanners.AutoRepave
+	policyLock.RUnlock()
+	if !cfg.Enabled {
+		return
+	}
+
+	window := time.Duration(max(cfg.Triggers.WindowMinutes, 1)) * time.Minute
+	cutoff := time.Now().Add(-window)
+
+	repaveEventLock.Lock()
+	defer repaveEventLock.Unlock()
+
+	repaveEventLog = append(repaveEventLog, repaveEvent{time.Now(), trigger})
+
+	// Prune events outside the window
+	var recent []repaveEvent
+	for _, e := range repaveEventLog {
+		if e.Timestamp.After(cutoff) {
+			recent = append(recent, e)
+		}
+	}
+	repaveEventLog = recent
+
+	// Count by type
+	canaryCount, riskCount := 0, 0
+	for _, e := range recent {
+		switch e.Trigger {
+		case "CANARY":
+			canaryCount++
+		case "RISK_SEQUENCE":
+			riskCount++
+		}
+	}
+
+	shouldFire := false
+	if cfg.Triggers.CanaryDetections > 0 && canaryCount >= cfg.Triggers.CanaryDetections {
+		shouldFire = true
+	}
+	if cfg.Triggers.RiskSequences > 0 && riskCount >= cfg.Triggers.RiskSequences {
+		shouldFire = true
+	}
+
+	if shouldFire && !repaveFired {
+		repaveFired = true
+		repaveFiredAt = time.Now()
+		go executeAutoRepave(canaryCount, riskCount, cfg.Actions.KillSessions, cfg.Actions.RotateCanary)
+	}
+}
+
+func executeAutoRepave(canaryCount, riskCount int, doKill, doRotate bool) {
+	actions := []string{}
+	if doKill {
+		n := killAllSessions()
+		actions = append(actions, fmt.Sprintf("terminated %d session(s)", n))
+	}
+	if doRotate {
+		rotateCanary()
+		actions = append(actions, "canary rotated")
+	}
+	msg := fmt.Sprintf("Auto-repave: canary=%d, risk_seq=%d → %s",
+		canaryCount, riskCount, strings.Join(actions, " · "))
+	logAuditEvent("", "", "System", "AUTO_REPAVE", msg, "")
+	addAlert("AUTO_REPAVE", msg)
+
+	// Cooldown — clear fired state after 5 minutes so it can re-trigger
+	time.Sleep(5 * time.Minute)
+	repaveEventLock.Lock()
+	repaveFired = false
+	repaveEventLog = nil
+	repaveEventLock.Unlock()
+}
+
+// ──────────────────────────────────────────────
+// Session Anomaly Scoring
+// ──────────────────────────────────────────────
+
+// computeAnomalyScore returns a 0.0–1.0 score and a list of flag strings.
+// Three independent signals contribute equally (each worth 1/3):
+//  1. New tool appearing late (not seen in first 10 calls)
+//  2. Velocity spike — same tool ≥5 times in the last 10 calls
+//  3. Dangerous succession — read_file or get_env immediately before exec or post_request
+func computeAnomalyScore(events []AgentEvent) (float64, []string) {
+	if len(events) < 5 {
+		return 0, nil
+	}
+	const maxSignals = 3
+	signals := 0
+	var flags []string
+
+	// Signal 1: late-appearing tool
+	if len(events) > 10 {
+		earlyTools := make(map[string]bool)
+		for _, e := range events[:10] {
+			earlyTools[e.Tool] = true
+		}
+		for _, e := range events[len(events)-5:] {
+			if !earlyTools[e.Tool] {
+				signals++
+				flags = append(flags, fmt.Sprintf("new tool '%s' appeared late in session", e.Tool))
+				break
+			}
+		}
+	}
+
+	// Signal 2: velocity spike in last 10
+	if len(events) >= 10 {
+		freq := make(map[string]int)
+		for _, e := range events[len(events)-10:] {
+			freq[e.Tool]++
+		}
+		for tool, count := range freq {
+			if count >= 5 {
+				signals++
+				flags = append(flags, fmt.Sprintf("velocity spike: '%s' called %dx in last 10", tool, count))
+				break
+			}
+		}
+	}
+
+	// Signal 3: dangerous succession in last 3
+	if len(events) >= 2 {
+		last := events[len(events)-2:]
+		src, dst := last[0].Tool, last[1].Tool
+		dangerous := (src == "read_file" || src == "get_env" || src == "list_files") &&
+			(dst == "exec" || dst == "post_request")
+		if dangerous {
+			signals++
+			flags = append(flags, fmt.Sprintf("dangerous succession: %s → %s", src, dst))
+		}
+	}
+
+	return float64(signals) / float64(maxSignals), flags
 }
 
 // ──────────────────────────────────────────────
@@ -1171,16 +1546,90 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 			if len(state.Events) > maxSessionEvents {
 				state.Events = state.Events[len(state.Events)-maxSessionEvents:]
 			}
+			if state.ToolCounts == nil {
+				state.ToolCounts = make(map[string]int)
+			}
+			state.ToolCounts[toolCall.Tool]++
+			state.TotalToolCalls++
+			state.LastSeen = time.Now()
+			highRisk := isHighRiskTool(toolCall.Tool)
+			if highRisk {
+				state.HighRiskToolCalls++
+			}
 
+			// --- Blast Radius Cap ---
+			if policy.Scanners.BlastRadius.Enabled {
+				br := policy.Scanners.BlastRadius
+				var capHit string
+				switch {
+				case br.MaxToolCallsPerSession > 0 && state.TotalToolCalls >= br.MaxToolCallsPerSession:
+					capHit = fmt.Sprintf("total tool calls cap (%d)", br.MaxToolCallsPerSession)
+				case br.MaxHighRiskCallsPerSession > 0 && state.HighRiskToolCalls >= br.MaxHighRiskCallsPerSession:
+					capHit = fmt.Sprintf("high-risk tool calls cap (%d)", br.MaxHighRiskCallsPerSession)
+				}
+				if capHit != "" {
+					state.BlastRadiusHit = true
+					result.Blocked = true
+					result.RuleMatched = "Blast Radius Exceeded: " + capHit
+					sessionHistoryLock.Unlock()
+					logAuditEvent("", sessionKey, "Request", "BLOCKED", result.RuleMatched, toolCall.Tool)
+					go addAlert("BLAST_RADIUS", fmt.Sprintf("Session terminated: %s", capHit))
+					go killSession(sessionKey)
+					return result
+				}
+			}
+
+			// --- Zero-Trust Tool Approval ---
+			if policy.Scanners.ZeroTrustTools.Enabled && highRisk {
+				// Check if already denied
+				if state.DeniedTools != nil && state.DeniedTools[toolCall.Tool] {
+					result.Blocked = true
+					result.RuleMatched = fmt.Sprintf("Zero-Trust: tool '%s' was denied for this session", toolCall.Tool)
+					sessionHistoryLock.Unlock()
+					return result
+				}
+				// Check if already approved
+				if state.ApprovedTools == nil || !state.ApprovedTools[toolCall.Tool] {
+					// Not approved — queue request and block
+					sessionHistoryLock.Unlock()
+					approvalID := requestToolApproval(sessionKey, toolCall.Tool)
+					result.Blocked = true
+					result.RuleMatched = fmt.Sprintf("Zero-Trust: tool '%s' requires admin approval (id=%s)", toolCall.Tool, approvalID)
+					return result
+				}
+			}
+
+			// --- Intent pattern matching ---
 			for _, p := range definedRiskPatterns {
 				if matchesRiskPattern(state.Events, p) {
 					result.Blocked = true
 					result.RuleMatched = "High-Risk Sequence: " + p.description
 					delete(sessionHistory, sessionKey)
 					sessionHistoryLock.Unlock()
+					go recordRepaveEvent("RISK_SEQUENCE")
 					return result
 				}
 			}
+
+			// --- Anomaly scoring ---
+			if policy.Scanners.AnomalyScoring.Enabled {
+				score, flags := computeAnomalyScore(state.Events)
+				state.AnomalyScore = score
+				state.AnomalyFlags = flags
+				blockT := policy.Scanners.AnomalyScoring.BlockThreshold
+				alertT := policy.Scanners.AnomalyScoring.AlertThreshold
+				if blockT > 0 && score >= blockT {
+					result.Blocked = true
+					result.RuleMatched = fmt.Sprintf("Anomaly Detected (score=%.2f): %s", score, strings.Join(flags, "; "))
+					sessionHistoryLock.Unlock()
+					return result
+				}
+				if alertT > 0 && score >= alertT {
+					go addAlert("ANOMALY", fmt.Sprintf("Session %s anomaly score=%.2f: %s",
+						sessionKey[:min(8, len(sessionKey))], score, strings.Join(flags, "; ")))
+				}
+			}
+
 			sessionHistoryLock.Unlock()
 		}
 	}
@@ -1192,6 +1641,7 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 	if runtimeCanary != "" && strings.Contains(contentToScan, runtimeCanary) {
 		result.Blocked = true
 		result.RuleMatched = "Canary Token Detected: runtime GoalLock anchor"
+		go recordRepaveEvent("CANARY")
 		return result
 	}
 	// Also check any additional static canary tokens defined in policy.yaml.
@@ -1569,6 +2019,98 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	case endpoint == "skills" && r.Method == http.MethodGet:
 		json.NewEncoder(w).Encode(ListSkills())
 
+	// GET /armor/api/alerts — unread security alerts (auto-repave, anomaly)
+	case endpoint == "alerts" && r.Method == http.MethodGet:
+		alertsLock.Lock()
+		out := append([]Alert{}, alerts...)
+		alertsLock.Unlock()
+		json.NewEncoder(w).Encode(out)
+
+	// POST /armor/api/alerts/dismiss — mark all alerts read
+	case endpoint == "alerts/dismiss" && r.Method == http.MethodPost:
+		alertsLock.Lock()
+		for i := range alerts {
+			alerts[i].Read = true
+		}
+		alertsLock.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+
+	// GET /armor/api/sessions/anomaly — current anomaly scores per active session
+	case endpoint == "sessions/anomaly" && r.Method == http.MethodGet:
+		sessionHistoryLock.RLock()
+		type sessionAnomaly struct {
+			SessionKey   string   `json:"session_key"`
+			AnomalyScore float64  `json:"anomaly_score"`
+			AnomalyFlags []string `json:"anomaly_flags"`
+			EventCount   int      `json:"event_count"`
+			LastSeen     string   `json:"last_seen"`
+		}
+		var out []sessionAnomaly
+		for key, state := range sessionHistory {
+			display := key
+			if len(display) > 16 {
+				display = display[:16] + "…"
+			}
+			out = append(out, sessionAnomaly{
+				SessionKey:   display,
+				AnomalyScore: state.AnomalyScore,
+				AnomalyFlags: state.AnomalyFlags,
+				EventCount:   len(state.Events),
+				LastSeen:     state.LastSeen.Format(time.RFC3339),
+			})
+		}
+		sessionHistoryLock.RUnlock()
+		json.NewEncoder(w).Encode(out)
+
+	// ── Zero-Trust Tool Approval endpoints ──────────────────────────
+
+	// GET /armor/api/approvals — list all approval requests
+	case endpoint == "approvals" && r.Method == http.MethodGet:
+		toolApprovalsLock.RLock()
+		var list []*ToolApprovalRequest
+		for _, req := range toolApprovals {
+			list = append(list, req)
+		}
+		toolApprovalsLock.RUnlock()
+		if list == nil {
+			list = []*ToolApprovalRequest{}
+		}
+		json.NewEncoder(w).Encode(list)
+
+	// POST /armor/api/approvals/approve — approve a tool request
+	case endpoint == "approvals/approve" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if ok := approveToolRequest(body.ID); !ok {
+			http.Error(w, `{"error":"not found or already actioned"}`, http.StatusNotFound)
+			return
+		}
+		logAuditEvent("", "", "System", "TOOL_APPROVED", "Tool approval granted: "+body.ID, "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+
+	// POST /armor/api/approvals/deny — deny a tool request
+	case endpoint == "approvals/deny" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if ok := denyToolRequest(body.ID); !ok {
+			http.Error(w, `{"error":"not found or already actioned"}`, http.StatusNotFound)
+			return
+		}
+		logAuditEvent("", "", "System", "TOOL_DENIED", "Tool request denied: "+body.ID, "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+
 	// ── Assume Breach · Repave endpoints ────────────────────────────
 
 	// POST /armor/api/sessions/kill — close all WS connections + clear history
@@ -1791,6 +2333,26 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 
 				if result.Blocked {
 					logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "BLOCKED", result.RuleMatched, payload)
+
+					// Track blocks per session for blast radius cap
+					if policy.Scanners.BlastRadius.Enabled {
+						sessionHistoryLock.Lock()
+						if state, ok := sessionHistory[sessionKey]; ok {
+							state.TotalBlocks++
+							maxB := policy.Scanners.BlastRadius.MaxBlocksPerSession
+							if maxB > 0 && state.TotalBlocks >= maxB {
+								state.BlastRadiusHit = true
+								sessionHistoryLock.Unlock()
+								go addAlert("BLAST_RADIUS",
+									fmt.Sprintf("Session terminated: max blocks cap (%d) reached", maxB))
+								go killSession(sessionKey)
+							} else {
+								sessionHistoryLock.Unlock()
+							}
+						} else {
+							sessionHistoryLock.Unlock()
+						}
+					}
 
 					// Extract the request id so the response correlates correctly
 					var reqFrame struct {
@@ -2154,6 +2716,7 @@ func main() {
 	go watchPolicyFile()
 	go cleanupSessionHistory()
 	go cleanupRateLimiters()
+	go cleanupExpiredApprovals()
 
 	targetURL := os.Getenv("TARGET_URL")
 	if targetURL == "" {

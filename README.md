@@ -682,23 +682,24 @@ All features below are fully implemented and active out of the box.
 | **Session Kill Switch** | `POST /armor/api/sessions/kill` instantly closes all active WebSocket connections and resets in-memory session history — the fastest path to clean state |
 | **GoalLock Canary Rotation** | `POST /armor/api/canary/rotate` generates a new runtime canary mid-run, invalidating the old one immediately — no restart required |
 | **Policy Snapshots & Rollback** | Every policy save checkpointed to SQLite; one-click rollback from the dashboard restores any prior known-good state |
+| **Automated Repave Trigger** | Configurable thresholds (canary detections, risk sequences, time window) auto-fire kill-sessions + canary rotation; dashboard alert fires with details |
+| **Session Anomaly Scoring** | Three behavioural signals scored 0–1 per session; configurable alert and block thresholds; live score bars in Repave tab |
+| **Zero-Trust Tool Approval** | `exec`, `browser`, `sessions_spawn` and other high-risk tools blocked on first use until an admin approves via the Repave tab; auto-deny after configurable timeout |
+| **Blast Radius Cap** | Hard per-session limits on total tool calls, total blocks, and high-risk tool calls — enforced regardless of all other policy; hit kills the session instantly |
+| **Fully Editable Posture Config** | All security posture settings (auto-repave thresholds, anomaly scores, zero-trust tool list, blast radius caps) editable from the Policy tab admin UI with live hot-reload |
+| **Expandable Policy Sections** | Every policy section — scanner rule groups and security posture blocks — is collapsible in the dashboard; first scanner open by default, rest collapsed |
 
 ## Roadmap
 
-### Assume Breach · Survive & Repave — next steps
+### Assume Breach · Survive & Repave — fully shipped
 
-These three features implement the **Repave** pillar and are fully shipped:
-
-- [x] **Session kill switch** — `POST /armor/api/sessions/kill` closes all active connections and clears session history instantly; dashboard Repave tab (06) provides a one-click button
-- [x] **GoalLock canary rotation** — `POST /armor/api/canary/rotate` issues a new canary mid-run without restarting the proxy; old token immediately invalid
-- [x] **Policy snapshots & rollback** — every dashboard policy save auto-checkpoints to SQLite; `GET /armor/api/snapshots` lists history; Repave tab provides per-snapshot Restore buttons
-
-Planned extensions to complete the posture:
-
-- [ ] **Automated repave trigger** — when critical events (canary detections, anomaly score) exceed a threshold, proxy automatically restarts the OpenClaw gateway and notifies via dashboard alert
-- [ ] **Session anomaly scoring** — baseline normal tool-call patterns per agent; flag statistical deviations mid-session with auto-escalation
-- [ ] **Zero-trust tool approval** — high-risk tools (`exec`, `browser`, `sessions_spawn`) require explicit per-session approval before first use
-- [ ] **Blast radius cap** — hard limit on tokens, tool calls, and outbound bytes per session regardless of policy
+- [x] **Session kill switch** — `POST /armor/api/sessions/kill` with one-click button in Repave tab (06)
+- [x] **GoalLock canary rotation** — `POST /armor/api/canary/rotate`, old token immediately invalid
+- [x] **Policy snapshots & rollback** — auto-checkpoint on every save; per-snapshot Restore buttons in Repave tab
+- [x] **Automated repave trigger** — threshold-based, configurable window, 5-minute cooldown, dashboard alert on fire
+- [x] **Session anomaly scoring** — 3-signal behavioural scorer (0–1), live bars in Repave tab, configurable alert/block thresholds
+- [x] **Zero-trust tool approval** — per-session approval gate for high-risk tools; approve/deny from Repave tab; auto-deny after timeout
+- [x] **Blast radius cap** — hard per-session limits on tool calls, blocks, and high-risk calls; auto-terminates session on breach
 
 ### Other upcoming features
 

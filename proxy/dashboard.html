@@ -210,6 +210,30 @@ input,textarea,select{font-family:inherit;font-size:inherit;color:inherit}
 .match-highlight{background:rgba(168,85,247,.2);color:var(--purple);border-radius:1px;padding:0 1px}
 /* Save bar */
 .policy-save-bar{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;padding:10px 24px;background:var(--s1);border-top:1px solid var(--b2);z-index:10}
+/* ── Posture config blocks ── */
+.posture-block{border:1px solid var(--b1);border-radius:var(--r);margin-bottom:1px;overflow:hidden}
+.posture-hdr{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 12px;background:var(--s2);cursor:pointer;user-select:none}
+.posture-hdr:hover{background:var(--s1)}
+.posture-name{font-family:var(--serif);font-style:italic;font-size:18px;color:var(--t1)}
+.posture-slug{font-size:11px;color:var(--t3);margin-left:8px}
+.posture-body{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.cfg-row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.cfg-label{font-size:11px;color:var(--t2);flex:1}
+.cfg-sub{font-size:10px;color:var(--t3);margin-top:2px}
+.cfg-num{width:72px;padding:4px 8px;background:var(--bg);border:1px solid var(--b2);border-radius:var(--r);color:var(--t2);font-size:12px;font-family:var(--mono);text-align:right;outline:none;transition:border-color .15s}
+.cfg-num:focus{border-color:var(--purple)}
+.cfg-num:disabled{opacity:.4}
+.tag-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.tag{display:flex;align-items:center;gap:4px;padding:2px 8px;background:var(--s2);border:1px solid var(--b2);border-radius:10px;font-size:11px;font-family:var(--mono);color:var(--t2)}
+.tag-del{cursor:pointer;color:var(--t3);font-size:11px;line-height:1;padding:0 2px;transition:color .15s}
+.tag-del:hover{color:var(--red)}
+.tag-add{display:flex;gap:6px;margin-top:8px}
+.tag-input{flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--b2);border-radius:var(--r);color:var(--t2);font-size:11px;font-family:var(--mono);outline:none;transition:border-color .15s}
+.tag-input:focus{border-color:var(--purple)}
+.tag-input::placeholder{color:var(--t3)}
+.tag-add-btn{padding:4px 10px;border:1px solid var(--b2);border-radius:var(--r);font-size:11px;color:var(--t2);background:var(--s2);cursor:pointer;transition:all .15s}
+.tag-add-btn:hover{border-color:var(--purple);color:var(--purple)}
+.ro-val{font-size:12px;color:var(--t2);font-family:var(--mono)}
 .save-note{font-size:11px;color:var(--yellow)}
 .btn-save{padding:5px 16px;background:var(--purple);color:#fff;border-radius:var(--r);font-size:12px;font-weight:600;transition:opacity .15s}
 .btn-save:hover{opacity:.85}.btn-save:disabled{opacity:.35;cursor:default}
@@ -531,12 +555,151 @@ function Health({data,recentBlocks}){
 }
 
 /* ═══ POLICY ═══ */
+/* ── PostureConfig — editable security posture blocks ── */
+function PostureConfig({pol,isAdmin,setField,addTool,removeTool}){
+  const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false});
+  const[newTool,setNewTool]=useState('');
+  const sc=pol?.scanners;
+  if(!sc)return null;
+
+  const Toggle=({path,checked})=>(
+    isAdmin
+      ?<div className={`sq-toggle ${checked?'on':''}`} onClick={()=>setField(path,!checked)} style={{cursor:'pointer'}}/>
+      :<span className="ro-val">{checked?'enabled':'disabled'}</span>
+  );
+
+  const NumInput=({path,value,min=0,max,step=1,note})=>(
+    isAdmin
+      ?<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:2}}>
+          <input type="number" className="cfg-num" value={value??''} min={min} max={max} step={step}
+            onChange={e=>setField(path,+e.target.value)} disabled={!isAdmin}/>
+          {note&&<span style={{fontSize:9,color:'var(--t3)'}}>{note}</span>}
+        </div>
+      :<span className="ro-val">{value}</span>
+  );
+
+  const CfgRow=({label,sub,children})=>(
+    <div className="cfg-row">
+      <div><div className="cfg-label">{label}</div>{sub&&<div className="cfg-sub">{sub}</div>}</div>
+      {children}
+    </div>
+  );
+
+  const Block=({id,name,slug,children})=>(
+    <div className="posture-block">
+      <div className="posture-hdr" onClick={()=>setOpen(o=>({...o,[id]:!o[id]}))}>
+        <div><span className="posture-name">{name}</span><span className="posture-slug">{slug}</span></div>
+        <span style={{fontSize:11,color:'var(--t3)'}}>{open[id]?'▲':'▼'}</span>
+      </div>
+      {open[id]&&<div className="posture-body">{children}</div>}
+    </div>
+  );
+
+  return(
+    <div style={{marginTop:24}}>
+      <div className="section-hdr" style={{marginBottom:12}}>
+        <span className="sec-title">Security Posture Configuration</span>
+        <span className="sec-meta">Assume Breach · Survive &amp; Repave</span>
+      </div>
+
+      {/* Auto-Repave */}
+      <Block id="auto_repave" name="Auto-Repave" slug="/auto_repave">
+        <CfgRow label="Enabled" sub="Automatically fire repave actions when thresholds are exceeded">
+          <Toggle path={['auto_repave','enabled']} checked={!!sc.auto_repave?.enabled}/>
+        </CfgRow>
+        <div style={{height:1,background:'var(--b1)',margin:'4px 0'}}/>
+        <div style={{fontSize:10,color:'var(--t3)',letterSpacing:'.06em',textTransform:'uppercase',marginBottom:4}}>Triggers</div>
+        <CfgRow label="Canary detections" sub="Canary blocks within the window that trigger auto-repave">
+          <NumInput path={['auto_repave','triggers','canary_detections']} value={sc.auto_repave?.triggers?.canary_detections} min={1}/>
+        </CfgRow>
+        <CfgRow label="Risk sequence blocks" sub="High-risk sequence blocks within the window">
+          <NumInput path={['auto_repave','triggers','risk_sequences']} value={sc.auto_repave?.triggers?.risk_sequences} min={1}/>
+        </CfgRow>
+        <CfgRow label="Window (minutes)" sub="Rolling time window for all counters">
+          <NumInput path={['auto_repave','triggers','window_minutes']} value={sc.auto_repave?.triggers?.window_minutes} min={1} note="min"/>
+        </CfgRow>
+        <div style={{height:1,background:'var(--b1)',margin:'4px 0'}}/>
+        <div style={{fontSize:10,color:'var(--t3)',letterSpacing:'.06em',textTransform:'uppercase',marginBottom:4}}>Actions on trigger</div>
+        <CfgRow label="Kill all sessions" sub="Close every active WebSocket connection">
+          <Toggle path={['auto_repave','actions','kill_sessions']} checked={!!sc.auto_repave?.actions?.kill_sessions}/>
+        </CfgRow>
+        <CfgRow label="Rotate GoalLock canary" sub="Generate a new runtime canary, invalidating captured tokens">
+          <Toggle path={['auto_repave','actions','rotate_canary']} checked={!!sc.auto_repave?.actions?.rotate_canary}/>
+        </CfgRow>
+      </Block>
+
+      {/* Anomaly Scoring */}
+      <Block id="anomaly" name="Anomaly Scoring" slug="/anomaly_scoring">
+        <CfgRow label="Enabled" sub="Score 0–1 based on 3 behavioural signals per session">
+          <Toggle path={['anomaly_scoring','enabled']} checked={!!sc.anomaly_scoring?.enabled}/>
+        </CfgRow>
+        <CfgRow label="Alert threshold" sub="Score ≥ this → red alert in Repave tab (0.34 = 1 of 3 signals)">
+          <NumInput path={['anomaly_scoring','alert_threshold']} value={sc.anomaly_scoring?.alert_threshold} min={0} max={1} step={0.05}/>
+        </CfgRow>
+        <CfgRow label="Block threshold" sub="Score ≥ this → request blocked (0.9 = all 3 signals)">
+          <NumInput path={['anomaly_scoring','block_threshold']} value={sc.anomaly_scoring?.block_threshold} min={0} max={1} step={0.05}/>
+        </CfgRow>
+        <div style={{padding:'8px 0 4px',fontSize:10,color:'var(--t3)',lineHeight:1.7}}>
+          <b style={{color:'var(--t2)'}}>Signals scored:</b> (1) new tool appearing late in session · (2) velocity spike ≥5× same tool in last 10 calls · (3) dangerous succession <code>read_file→exec</code>
+        </div>
+      </Block>
+
+      {/* Zero-Trust Tool Approval */}
+      <Block id="zero_trust" name="Zero-Trust Tool Approval" slug="/zero_trust_tools">
+        <CfgRow label="Enabled" sub="High-risk tools require explicit admin approval before first use per session">
+          <Toggle path={['zero_trust_tools','enabled']} checked={!!sc.zero_trust_tools?.enabled}/>
+        </CfgRow>
+        <CfgRow label="Auto-deny after (minutes)" sub="Pending requests auto-denied if no admin action">
+          <NumInput path={['zero_trust_tools','auto_deny_after_minutes']} value={sc.zero_trust_tools?.auto_deny_after_minutes} min={1} note="min"/>
+        </CfgRow>
+        <div>
+          <div className="cfg-label" style={{marginBottom:4}}>High-risk tool list</div>
+          <div className="cfg-sub" style={{marginBottom:8}}>Tool names that require approval before first use in a session</div>
+          <div className="tag-list">
+            {(sc.zero_trust_tools?.high_risk_tools||[]).map(t=>(
+              <span key={t} className="tag">
+                {t}
+                {isAdmin&&<span className="tag-del" onClick={()=>removeTool(t)}>✕</span>}
+              </span>
+            ))}
+          </div>
+          {isAdmin&&(
+            <div className="tag-add">
+              <input className="tag-input" placeholder="tool name, e.g. exec" value={newTool}
+                onChange={e=>setNewTool(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'){addTool(newTool);setNewTool('');}}}/>
+              <button className="tag-add-btn" onClick={()=>{addTool(newTool);setNewTool('');}}>Add</button>
+            </div>
+          )}
+        </div>
+      </Block>
+
+      {/* Blast Radius */}
+      <Block id="blast" name="Blast Radius Cap" slug="/blast_radius">
+        <CfgRow label="Enabled" sub="Hard per-session limits — enforced regardless of all other policy">
+          <Toggle path={['blast_radius','enabled']} checked={!!sc.blast_radius?.enabled}/>
+        </CfgRow>
+        <CfgRow label="Max tool calls / session" sub="Kill session after this many total tool invocations">
+          <NumInput path={['blast_radius','max_tool_calls_per_session']} value={sc.blast_radius?.max_tool_calls_per_session} min={1}/>
+        </CfgRow>
+        <CfgRow label="Max blocks / session" sub="Kill session after this many blocks (repeated suspicious attempts)">
+          <NumInput path={['blast_radius','max_blocks_per_session']} value={sc.blast_radius?.max_blocks_per_session} min={1}/>
+        </CfgRow>
+        <CfgRow label="Max high-risk calls / session" sub="Kill session after this many calls to zero-trust tools">
+          <NumInput path={['blast_radius','max_high_risk_calls_per_session']} value={sc.blast_radius?.max_high_risk_calls_per_session} min={1}/>
+        </CfgRow>
+      </Block>
+    </div>
+  );
+}
+
 function Policy({role}){
   const[pol,setPol]=useState(null);
   const[dirty,setDirty]=useState(false);
   const[saving,setSaving]=useState(false);
   const[testInput,setTestInput]=useState('');
   const[selectedRule,setSelectedRule]=useState(null);
+  const[openGroups,setOpenGroups]=useState({});
   const isAdmin=role==='admin';
   useEffect(()=>{api('policy').then(r=>r.json()).then(d=>{setPol(d);setDirty(false);});},[]);
   const toggleRule=(key,lk,idx)=>{
@@ -547,6 +710,39 @@ function Policy({role}){
   const toggleScanner=key=>{
     if(!isAdmin)return;
     setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners[key].enabled=!n.scanners[key].enabled;return n;});
+    setDirty(true);
+  };
+  // Generic setter for nested scalar fields: path is an array of keys, e.g. ['auto_repave','triggers','canary_detections']
+  const setField=(path,value)=>{
+    if(!isAdmin)return;
+    setPol(p=>{
+      const n=JSON.parse(JSON.stringify(p));
+      let obj=n.scanners;
+      for(let i=0;i<path.length-1;i++) obj=obj[path[i]];
+      obj[path[path.length-1]]=value;
+      return n;
+    });
+    setDirty(true);
+  };
+  // Tool list helpers
+  const addTool=(tool)=>{
+    if(!isAdmin||!tool.trim())return;
+    setPol(p=>{
+      const n=JSON.parse(JSON.stringify(p));
+      const tools=n.scanners.zero_trust_tools?.high_risk_tools||[];
+      if(!tools.includes(tool.trim()))tools.push(tool.trim());
+      n.scanners.zero_trust_tools.high_risk_tools=tools;
+      return n;
+    });
+    setDirty(true);
+  };
+  const removeTool=(tool)=>{
+    if(!isAdmin)return;
+    setPol(p=>{
+      const n=JSON.parse(JSON.stringify(p));
+      n.scanners.zero_trust_tools.high_risk_tools=(n.scanners.zero_trust_tools?.high_risk_tools||[]).filter(t=>t!==tool);
+      return n;
+    });
     setDirty(true);
   };
   const save=async()=>{setSaving(true);await api('policy',{method:'POST',body:JSON.stringify(pol)});setSaving(false);setDirty(false);};
@@ -571,6 +767,8 @@ function Policy({role}){
     {key:'malicious_content',name:'Malicious Content',slug:'/malicious_content',lk:'block_patterns',action:'block'},
     {key:'canary_tokens',   name:'Canary Tokens',    slug:'/canary_tokens',   lk:'tokens',         action:'block'},
   ];
+  const toggleGroupOpen=key=>setOpenGroups(o=>({...o,[key]:!o[key]}));
+
   return(
     <div>
       <div className="two-col">
@@ -597,46 +795,57 @@ function Policy({role}){
               {testInput&&!testMatches.length&&<span style={{fontSize:10,color:'var(--t3)'}}>No rules match — message would pass</span>}
             </div>
           </div>
-          {/* Scanner groups */}
-          {groups.map(g=>{
+          {/* Scanner groups — collapsible */}
+          {groups.map((g,idx)=>{
             const sc=pol.scanners[g.key]; if(!sc)return null;
             const rl=sc[g.lk]||[];
             const enabled=rl.filter(r=>r.enabled).length;
+            // First group open by default (key not yet in map → open if index 0)
+            const isOpen=g.key in openGroups ? openGroups[g.key] : idx===0;
             return(
-              <div key={g.key} className="scanner-section">
-                <div className="scanner-hdr">
+              <div key={g.key} className="posture-block">
+                <div className="posture-hdr" onClick={()=>toggleGroupOpen(g.key)}>
                   <div style={{display:'flex',alignItems:'baseline',gap:8}}>
-                    <span className="scanner-name">{g.name}</span>
-                    <span className="scanner-slug">{g.slug}</span>
+                    <span className="posture-name">{g.name}</span>
+                    <span className="posture-slug">{g.slug}</span>
                   </div>
-                  <div className="scanner-stats">
-                    <span>{enabled}/{rl.length} rules</span>
-                    <div className={`sq-toggle ${sc.enabled?'on':''}`} onClick={()=>toggleScanner(g.key)} title={sc.enabled?'Enabled — click to disable':'Disabled — click to enable'}/>
+                  <div style={{display:'flex',alignItems:'center',gap:12}}>
+                    <span style={{fontSize:11,color:'var(--t3)'}}>{enabled}/{rl.length} rules</span>
+                    {/* Stop propagation so toggle click doesn't collapse the group */}
+                    <div className={`sq-toggle ${sc.enabled?'on':''}`}
+                      onClick={ev=>{ev.stopPropagation();toggleScanner(g.key);}}
+                      title={sc.enabled?'Scanner enabled — click to disable':'Scanner disabled — click to enable'}/>
+                    <span style={{fontSize:11,color:'var(--t3)',width:10,textAlign:'center'}}>{isOpen?'▲':'▼'}</span>
                   </div>
                 </div>
-                <table className="rule-table">
-                  <thead><tr>
-                    <th width="20"></th>
-                    <th>Pattern</th>
-                    <th width="70">Hits 24h</th>
-                    <th width="90">12h Trend</th>
-                    <th width="80">Last Hit</th>
-                    <th width="20"></th>
-                  </tr></thead>
-                  <tbody>{rl.map((rule,i)=>(
-                    <tr key={i} onClick={()=>setSelectedRule({...rule,scanner:g.name,path:g.slug})} style={{cursor:'pointer'}}>
-                      <td><div className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
-                      <td><span className="rule-pattern" style={{color:rule.enabled?'var(--t2)':'var(--t3)'}}>{rule.rule}</span></td>
-                      <td><span className="rule-hits">—</span></td>
-                      <td><Sparkline data={[]} color="#ef4444" w={80} h={20}/></td>
-                      <td><span className="rule-last">never</span></td>
-                      <td><span className="rule-arrow">→</span></td>
-                    </tr>
-                  ))}</tbody>
-                </table>
+                {isOpen&&(
+                  <table className="rule-table">
+                    <thead><tr>
+                      <th width="20"></th>
+                      <th>Pattern</th>
+                      <th width="70">Hits 24h</th>
+                      <th width="90">12h Trend</th>
+                      <th width="80">Last Hit</th>
+                      <th width="20"></th>
+                    </tr></thead>
+                    <tbody>{rl.map((rule,i)=>(
+                      <tr key={i} onClick={()=>setSelectedRule({...rule,scanner:g.name,path:g.slug})} style={{cursor:'pointer'}}>
+                        <td><div className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
+                        <td><span className="rule-pattern" style={{color:rule.enabled?'var(--t2)':'var(--t3)'}}>{rule.rule}</span></td>
+                        <td><span className="rule-hits">—</span></td>
+                        <td><Sparkline data={[]} color="#ef4444" w={80} h={20}/></td>
+                        <td><span className="rule-last">never</span></td>
+                        <td><span className="rule-arrow">→</span></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                )}
               </div>
             );
           })}
+
+          {/* ── Security Posture Config ── */}
+          <PostureConfig pol={pol} isAdmin={isAdmin} setField={setField} addTool={addTool} removeTool={removeTool}/>
         </div>
         <div className="col-side">
           <div className="inspector">
@@ -887,9 +1096,23 @@ function Repave({role}){
   const[snapshots,setSnapshots]=useState(null);
   const[restoring,setRestoring]=useState(null);
   const[restoreResult,setRestoreResult]=useState(null);
+  const[alerts,setAlerts]=useState([]);
+  const[anomaly,setAnomaly]=useState([]);
+  const[approvals,setApprovals]=useState([]);
+  const[actioningApproval,setActioningApproval]=useState(null);
 
-  useEffect(()=>{loadSnaps();},[]);
+  useEffect(()=>{
+    loadSnaps();loadAlerts();loadAnomaly();loadApprovals();
+    const t=setInterval(()=>{loadAlerts();loadAnomaly();loadApprovals();},4000);
+    return()=>clearInterval(t);
+  },[]);
   const loadSnaps=()=>api('snapshots').then(r=>r.json()).then(d=>setSnapshots(Array.isArray(d)?d:[])).catch(()=>setSnapshots([]));
+  const loadAlerts=()=>api('alerts').then(r=>r.json()).then(d=>setAlerts(Array.isArray(d)?d:[])).catch(()=>{});
+  const loadAnomaly=()=>api('sessions/anomaly').then(r=>r.json()).then(d=>setAnomaly(Array.isArray(d)?d:[])).catch(()=>{});
+  const loadApprovals=()=>api('approvals').then(r=>r.json()).then(d=>setApprovals(Array.isArray(d)?d:[])).catch(()=>{});
+  const dismissAlerts=()=>api('alerts/dismiss',{method:'POST'}).then(()=>loadAlerts());
+  const approveReq=async(id)=>{setActioningApproval(id);await api('approvals/approve',{method:'POST',body:JSON.stringify({id})});await loadApprovals();setActioningApproval(null);};
+  const denyReq=async(id)=>{setActioningApproval(id);await api('approvals/deny',{method:'POST',body:JSON.stringify({id})});await loadApprovals();setActioningApproval(null);};
 
   const killSessions=async()=>{
     setKilling(true);setKillResult(null);
@@ -961,6 +1184,40 @@ function Repave({role}){
         </p>
       </div>
       <div style={{padding:'0 24px'}}>
+        {/* ── Zero-Trust Tool Approvals ── */}
+        <div className="section-hdr" style={{marginTop:approvals.length?0:0}}><span className="sec-title">Zero-Trust Tool Approvals</span><span className="sec-meta">{approvals.filter(a=>a.status==='pending').length} pending</span></div>
+        {approvals.length===0
+          ?<p style={{fontSize:11,color:'var(--t3)',marginBottom:20,lineHeight:1.6}}>No approval requests yet. When an agent calls a high-risk tool (<code>exec</code>, <code>browser</code>, <code>sessions_spawn</code>) for the first time, the request appears here for admin sign-off.</p>
+          :<div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden',marginBottom:20}}>
+            <div style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 70px 130px',padding:'6px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)',fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)',gap:12}}>
+              <span>Time</span><span>Session</span><span>Tool</span><span>Status</span><span></span>
+            </div>
+            {approvals.sort((a,b)=>a.status==='pending'?-1:1).map(a=>{
+              const sc=a.status==='approved'?'var(--green)':a.status==='denied'?'var(--red)':'var(--yellow)';
+              return(
+                <div key={a.id} style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 70px 130px',alignItems:'center',padding:'9px 12px',borderBottom:'1px solid var(--b1)',gap:12,background:a.status==='pending'?'rgba(234,179,8,.04)':''}}>
+                  <span style={{fontSize:10,color:'var(--t3)'}}>{(a.requested_at||'').slice(11,19)}</span>
+                  <span style={{fontSize:11,fontFamily:'monospace',color:'var(--t2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.session_key}</span>
+                  <span style={{fontSize:12,fontFamily:'monospace',fontWeight:a.status==='pending'?700:400,color:a.status==='pending'?'var(--yellow)':'var(--t3)'}}>{a.tool}</span>
+                  <span style={{fontSize:10,color:sc,fontWeight:600,textTransform:'uppercase'}}>{a.status}</span>
+                  {isAdmin&&a.status==='pending'?(
+                    <div style={{display:'flex',gap:5}}>
+                      <button disabled={actioningApproval===a.id} onClick={()=>approveReq(a.id)}
+                        style={{padding:'3px 9px',borderRadius:'var(--r)',border:'1px solid rgba(34,197,94,.4)',background:'rgba(34,197,94,.08)',color:'var(--green)',fontSize:11,cursor:'pointer',fontWeight:600,transition:'all .15s'}}>
+                        ✓ Approve
+                      </button>
+                      <button disabled={actioningApproval===a.id} onClick={()=>denyReq(a.id)}
+                        style={{padding:'3px 9px',borderRadius:'var(--r)',border:'1px solid rgba(239,68,68,.35)',background:'rgba(239,68,68,.08)',color:'var(--red)',fontSize:11,cursor:'pointer',fontWeight:600,transition:'all .15s'}}>
+                        ✕ Deny
+                      </button>
+                    </div>
+                  ):<span/>}
+                </div>
+              );
+            })}
+          </div>
+        }
+
         <div className="section-hdr"><span className="sec-title">Session Kill Switch</span><span className="sec-meta">Survive — instant session wipe</span></div>
         <ActionCard
           title="Kill All Active Sessions"
@@ -969,6 +1226,58 @@ function Repave({role}){
           btnLabel="Kill All Sessions"
           onClick={killSessions} loading={killing} result={killResult} danger={true}
         />
+
+        {/* ── Security Alerts ── */}
+        {alerts.filter(a=>!a.read).length>0&&(
+          <div style={{marginBottom:20,padding:14,border:'1px solid rgba(239,68,68,.35)',borderLeft:'3px solid var(--red)',borderRadius:'var(--r)',background:'var(--red-d)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+              <span style={{fontSize:11,fontWeight:700,color:'var(--red)',letterSpacing:'.06em',textTransform:'uppercase'}}>
+                🚨 {alerts.filter(a=>!a.read).length} Active Alert{alerts.filter(a=>!a.read).length!==1?'s':''}
+              </span>
+              <button onClick={dismissAlerts} style={{fontSize:10,color:'var(--t3)',padding:'2px 8px',border:'1px solid var(--b2)',borderRadius:'var(--r)',cursor:'pointer',background:'transparent'}}>
+                Dismiss all
+              </button>
+            </div>
+            {alerts.filter(a=>!a.read).map(a=>(
+              <div key={a.id} style={{marginBottom:6,paddingBottom:6,borderBottom:'1px solid rgba(239,68,68,.2)'}}>
+                <div style={{display:'flex',gap:8,alignItems:'baseline',marginBottom:2}}>
+                  <span style={{fontSize:9,letterSpacing:'.06em',textTransform:'uppercase',color:'var(--red)',fontWeight:700}}>{a.type}</span>
+                  <span style={{fontSize:10,color:'var(--t3)'}}>{a.timestamp}</span>
+                </div>
+                <div style={{fontSize:11,color:'var(--t2)'}}>{a.message}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Session Anomaly Scores ── */}
+        {anomaly.length>0&&(
+          <div style={{marginBottom:20}}>
+            <div className="section-hdr"><span className="sec-title">Active Session Anomaly Scores</span><span className="sec-meta">{anomaly.length} session(s) tracked</span></div>
+            <div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden'}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 80px 60px auto',padding:'6px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)',fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)',gap:12}}>
+                <span>Session</span><span>Score</span><span>Events</span><span>Flags</span>
+              </div>
+              {anomaly.map((s,i)=>{
+                const pct=Math.round(s.anomaly_score*100);
+                const color=pct>=90?'var(--red)':pct>=34?'var(--yellow)':'var(--green)';
+                return(
+                  <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 80px 60px auto',alignItems:'center',padding:'8px 12px',borderBottom:'1px solid var(--b1)',gap:12}}>
+                    <span style={{fontSize:11,fontFamily:'monospace',color:'var(--t3)'}}>{s.session_key}</span>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <div style={{flex:1,height:4,background:'var(--b1)',borderRadius:2}}>
+                        <div style={{height:4,width:`${pct}%`,background:color,borderRadius:2,transition:'width .4s'}}/>
+                      </div>
+                      <span style={{fontSize:10,color,fontWeight:700,width:32,textAlign:'right'}}>{pct}%</span>
+                    </div>
+                    <span style={{fontSize:11,color:'var(--t3)'}}>{s.event_count}</span>
+                    <span style={{fontSize:10,color:'var(--t3)',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(s.anomaly_flags||[]).join(' · ')||'—'}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="section-hdr" style={{marginTop:20}}><span className="sec-title">GoalLock Canary Rotation</span><span className="sec-meta">Assume Breach — invalidate captured anchors</span></div>
         <ActionCard
