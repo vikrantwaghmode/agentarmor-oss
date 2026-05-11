@@ -16,9 +16,39 @@
 
 AgentArmor is a **two-layer security proxy** for LLM-powered applications. It sits between your application and any LLM provider, scanning every message and enforcing network-level egress control. Works with any tool — OpenClaw, Cursor, custom apps, raw API clients.
 
-```
-  Your App  ──HTTP/WS──▶  AgentArmor Proxy (Layer 7)  ──▶  iptables Firewall (Layer 3/4)  ──▶  LLM
-                           Scan · Redact · Block · Log         Zero-trust egress
+```text
+┌─────────────────┐
+│   Client Apps   │
+│ (Browser, IDEs, │
+│ OpenClaw, etc.) │
+└───────┬─────────┘
+        │ HTTP / WS (Port 8080)
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│                       AgentArmor Environment                │
+│                                                             │
+│  ┌──────────────────────┐       ┌────────────────────────┐  │
+│  │ AgentArmor Proxy (L7)│       │ Web Dashboard & API    │  │
+│  │ - Prompts & Secrets  │ ◀───▶ │ - Posture Config       │  │
+│  │ - RAG / Skills       │       │ - Audit Log / Repave   │  │
+│  │ - Webhook Dispatch   │──┐    └───────────┬────────────┘  │
+│  └───────┬───────┬──────┘  │                │               │
+│          ▼       ▼         └──▶ ┌───────────▼────────────┐  │
+│  ┌────────┐  ┌───────────┐      │ Audit DB (SQLite)      │  │
+│  │ Ollama │  │ Presidio  │      └────────────────────────┘  │
+│  └────────┘  └───────────┘                                  │
+│          │                                                  │
+│  ┌───────▼───────────────────────────────────────────────┐  │
+│  │ iptables Firewall (L3/L4)                             │  │
+│  │ - Zero-Trust Egress (`firewall.yaml` allow-list)      │  │
+│  └───────┬───────────────────────────────────────────────┘  │
+└──────────┼──────────────────────────────────────────────────┘
+           │ Egress Traffic (HTTPS / WSS)
+           ▼
+┌─────────────────────────────────────┐
+│            External LLMs            │
+│   (OpenAI, Anthropic, Gemini, etc.) │
+└─────────────────────────────────────┘
 ```
 
 ## Security Posture — Assume Breach · Survive & Repave
