@@ -160,3 +160,9 @@ scanners:
         max_tool_calls_per_session: 100
         max_blocks_per_session: 10
         max_high_risk_calls_per_session: 5
+
+webhooks: []
+
+threat_feeds:
+    enabled: false
+    feeds: []

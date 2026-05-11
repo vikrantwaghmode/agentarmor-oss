@@ -119,6 +119,30 @@ type Config struct {
 			MaxHighRiskCallsPerSession int  `yaml:"max_high_risk_calls_per_session" json:"max_high_risk_calls_per_session"`
 		} `yaml:"blast_radius" json:"blast_radius"`
 	} `yaml:"scanners" json:"scanners"`
+	// Multiple SIEM destinations — each fires independently on matching events.
+	Webhooks []WebhookEntry `yaml:"webhooks" json:"webhooks"`
+	ThreatFeeds struct {
+		Enabled bool        `yaml:"enabled" json:"enabled"`
+		Feeds   []FeedEntry `yaml:"feeds" json:"feeds"`
+	} `yaml:"threat_feeds" json:"threat_feeds"`
+}
+
+type WebhookEntry struct {
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Name           string   `yaml:"name" json:"name"`
+	URL            string   `yaml:"url" json:"url"`
+	Format         string   `yaml:"format" json:"format"` // slack | splunk | generic
+	Events         []string `yaml:"events" json:"events"`
+	TimeoutMs      int      `yaml:"timeout_ms" json:"timeout_ms"`
+	IncludePayload bool     `yaml:"include_payload" json:"include_payload"`
+}
+
+type FeedEntry struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	Name            string `yaml:"name" json:"name"`
+	URL             string `yaml:"url" json:"url"`
+	Scanner         string `yaml:"scanner" json:"scanner"` // prompt_injection | malicious_content | pii | secrets
+	IntervalMinutes int    `yaml:"interval_minutes" json:"interval_minutes"`
 }
 
 var policy Config
@@ -483,6 +507,256 @@ var (
 	repaveFired     bool
 	repaveFiredAt   time.Time
 )
+
+// ──────────────────────────────────────────────
+// SIEM / Webhook Integration
+// ──────────────────────────────────────────────
+
+var webhookHTTPClient = &http.Client{Timeout: 3 * time.Second}
+
+// dispatchWebhook fires all enabled webhooks whose event filter matches.
+// Always called in a goroutine so it never blocks the request path.
+func dispatchWebhook(action, direction, ruleMatched, payloadSnippet, clientIP string) {
+	policyLock.RLock()
+	webhooks := policy.Webhooks
+	policyLock.RUnlock()
+	for _, cfg := range webhooks {
+		if !cfg.Enabled || cfg.URL == "" {
+			continue
+		}
+		matched := len(cfg.Events) == 0
+		for _, e := range cfg.Events {
+			if strings.EqualFold(e, action) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		timeout := time.Duration(max(cfg.TimeoutMs, 500)) * time.Millisecond
+		payload := buildWebhookPayload(cfg.Format, action, direction, ruleMatched, payloadSnippet, clientIP, cfg.IncludePayload)
+		go sendWebhook(cfg.URL, payload, timeout)
+	}
+}
+
+func buildWebhookPayload(format, action, direction, rule, snippet, clientIP string, includePayload bool) []byte {
+	ts := time.Now().Format(time.RFC3339)
+	snip := ""
+	if includePayload && len(snippet) > 0 {
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "…"
+		}
+		snip = snippet
+	}
+	colorMap := map[string]string{"BLOCKED": "#ef4444", "REDACTED": "#eab308", "AUTO_REPAVE": "#a855f7", "BLAST_RADIUS": "#f97316"}
+	color := colorMap[action]
+	if color == "" {
+		color = "#60a5fa"
+	}
+	switch strings.ToLower(format) {
+	case "slack":
+		body := map[string]interface{}{
+			"attachments": []map[string]interface{}{{
+				"color":    color,
+				"title":    "⬡ AgentArmor — " + action,
+				"text":     rule,
+				"fallback": "AgentArmor " + action + ": " + rule,
+				"fields": []map[string]string{
+					{"title": "Direction", "value": direction, "short": "true"},
+					{"title": "Time", "value": ts, "short": "true"},
+				},
+				"footer": "AgentArmor Security Proxy",
+			}},
+		}
+		if snip != "" {
+			body["attachments"].([]map[string]interface{})[0]["fields"] =
+				append(body["attachments"].([]map[string]interface{})[0]["fields"].([]map[string]string),
+					map[string]string{"title": "Payload", "value": snip, "short": "false"})
+		}
+		b, _ := json.Marshal(body)
+		return b
+	case "splunk":
+		body := map[string]interface{}{
+			"time":       time.Now().Unix(),
+			"source":     "agentarmor",
+			"sourcetype": "agentarmor:audit",
+			"event": map[string]string{
+				"action":       action,
+				"direction":    direction,
+				"rule_matched": rule,
+				"timestamp":    ts,
+				"client_ip":    clientIP,
+			},
+		}
+		if snip != "" {
+			body["event"].(map[string]string)["payload"] = snip
+		}
+		b, _ := json.Marshal(body)
+		return b
+	default: // generic JSON
+		body := map[string]interface{}{
+			"timestamp":    ts,
+			"source":       "agentarmor",
+			"action":       action,
+			"direction":    direction,
+			"rule_matched": rule,
+			"client_ip":    clientIP,
+		}
+		if snip != "" {
+			body["payload"] = snip
+		}
+		b, _ := json.Marshal(body)
+		return b
+	}
+}
+
+func sendWebhook(webhookURL string, body []byte, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("⚠️  Webhook build error: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := webhookHTTPClient.Do(req)
+	if err != nil {
+		log.Printf("⚠️  Webhook delivery failed: %v", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("⚠️  Webhook returned HTTP %d", resp.StatusCode)
+	}
+}
+
+// ──────────────────────────────────────────────
+// Threat Intelligence Feeds
+// ──────────────────────────────────────────────
+
+type FeedStatus struct {
+	URL         string `json:"url"`
+	Scanner     string `json:"scanner"`
+	LastFetched string `json:"last_fetched"`
+	RuleCount   int    `json:"rule_count"`
+	LastError   string `json:"last_error,omitempty"`
+}
+
+var (
+	threatFeedRegexes    = make(map[string][]*regexp.Regexp) // scanner key → compiled regexes
+	threatFeedRulesLock  sync.RWMutex
+	feedStatuses         []FeedStatus
+	feedStatusesLock     sync.Mutex
+)
+
+// ThreatFeedPayload is the JSON format feed URLs must return.
+type ThreatFeedPayload struct {
+	Version string `json:"version"`
+	Rules   []struct {
+		Rule    string `json:"rule"`
+		Enabled bool   `json:"enabled"`
+	} `json:"rules"`
+}
+
+func startThreatFeeds() {
+	policyLock.RLock()
+	cfg := policy.ThreatFeeds
+	policyLock.RUnlock()
+	if !cfg.Enabled {
+		return
+	}
+	started := 0
+	for _, feed := range cfg.Feeds {
+		if !feed.Enabled || feed.URL == "" {
+			continue
+		}
+		go runFeedPoller(feed.URL, feed.Scanner, max(feed.IntervalMinutes, 1))
+		started++
+	}
+	log.Printf("✅ Threat intelligence feeds started (%d feeds)", len(cfg.Feeds))
+}
+
+func runFeedPoller(feedURL, scanner string, intervalMinutes int) {
+	fetchAndApplyFeed(feedURL, scanner)
+	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		fetchAndApplyFeed(feedURL, scanner)
+	}
+}
+
+func fetchAndApplyFeed(feedURL, scanner string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	if err != nil {
+		updateFeedStatus(feedURL, scanner, 0, err.Error())
+		return
+	}
+	req.Header.Set("User-Agent", "AgentArmor-ThreatFeed/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		updateFeedStatus(feedURL, scanner, 0, err.Error())
+		log.Printf("⚠️  Threat feed fetch failed (%s): %v", scanner, err)
+		return
+	}
+	defer resp.Body.Close()
+	var payload ThreatFeedPayload
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		updateFeedStatus(feedURL, scanner, 0, "JSON parse error: "+err.Error())
+		return
+	}
+	var compiled []*regexp.Regexp
+	for _, r := range payload.Rules {
+		if !r.Enabled {
+			continue
+		}
+		rx, err := regexp.Compile(r.Rule)
+		if err != nil {
+			log.Printf("⚠️  Threat feed bad regex '%s': %v", r.Rule, err)
+			continue
+		}
+		compiled = append(compiled, rx)
+	}
+	threatFeedRulesLock.Lock()
+	threatFeedRegexes[scanner] = compiled
+	threatFeedRulesLock.Unlock()
+	updateFeedStatus(feedURL, scanner, len(compiled), "")
+	log.Printf("✅ Threat feed updated: scanner=%s rules=%d", scanner, len(compiled))
+}
+
+func updateFeedStatus(feedURL, scanner string, count int, errMsg string) {
+	feedStatusesLock.Lock()
+	defer feedStatusesLock.Unlock()
+	for i, s := range feedStatuses {
+		if s.URL == feedURL && s.Scanner == scanner {
+			feedStatuses[i].LastFetched = time.Now().Format(time.RFC3339)
+			feedStatuses[i].RuleCount = count
+			feedStatuses[i].LastError = errMsg
+			return
+		}
+	}
+	feedStatuses = append(feedStatuses, FeedStatus{
+		URL:         feedURL,
+		Scanner:     scanner,
+		LastFetched: time.Now().Format(time.RFC3339),
+		RuleCount:   count,
+		LastError:   errMsg,
+	})
+}
+
+// checkThreatFeedRules returns true if the text matches any threat-feed rule for the scanner.
+func checkThreatFeedRules(scanner, text string) bool {
+	threatFeedRulesLock.RLock()
+	defer threatFeedRulesLock.RUnlock()
+	for _, rx := range threatFeedRegexes[scanner] {
+		if rx.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
 
 // recordRepaveEvent increments the rolling counter. If thresholds are met,
 // fires an auto-repave in a background goroutine.
@@ -862,6 +1136,8 @@ func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payload
 	case "ALLOWED":
 		statsAllowed.Add(1)
 	}
+	// Fire webhook asynchronously — never blocks the request path
+	go dispatchWebhook(action, direction, ruleMatched, payloadSnippet, clientIP)
 }
 
 // ──────────────────────────────────────────────
@@ -1665,6 +1941,12 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 				return result
 			}
 		}
+		// Threat intelligence feed rules for prompt injection
+		if checkThreatFeedRules("prompt_injection", contentToScan) {
+			result.Blocked = true
+			result.RuleMatched = "Prompt Injection: threat-intel feed match"
+			return result
+		}
 	}
 
 	// --- Prompt Injection — LLM contextual scanner (block) ---
@@ -1732,6 +2014,12 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 				result.RuleMatched = "Malicious Content: " + rule.Rule
 				return result
 			}
+		}
+		// Threat intelligence feed rules for malicious content
+		if checkThreatFeedRules("malicious_content", contentToScan) {
+			result.Blocked = true
+			result.RuleMatched = "Malicious Content: threat-intel feed match"
+			return result
 		}
 	}
 
@@ -2060,6 +2348,52 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		sessionHistoryLock.RUnlock()
+		json.NewEncoder(w).Encode(out)
+
+	// ── SIEM / Webhook endpoints ─────────────────────────────────────
+
+	// POST /armor/api/webhook/test — send a test payload to verify delivery
+	case endpoint == "webhook/test" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Index int `json:"index"` // -1 means test all enabled
+		}
+		body.Index = -1
+		json.NewDecoder(r.Body).Decode(&body)
+		policyLock.RLock()
+		webhooks := policy.Webhooks
+		policyLock.RUnlock()
+		if len(webhooks) == 0 {
+			http.Error(w, `{"error":"no webhooks configured"}`, http.StatusBadRequest)
+			return
+		}
+		tested := 0
+		for i, cfg := range webhooks {
+			if body.Index >= 0 && i != body.Index {
+				continue
+			}
+			if !cfg.Enabled || cfg.URL == "" {
+				continue
+			}
+			payload := buildWebhookPayload(cfg.Format, "TEST", "System",
+				fmt.Sprintf("AgentArmor webhook test — %s", cfg.Name), "", "127.0.0.1", false)
+			timeout := time.Duration(max(cfg.TimeoutMs, 500)) * time.Millisecond
+			sendWebhook(cfg.URL, payload, timeout)
+			tested++
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "tested": tested})
+
+	// GET /armor/api/feeds — threat intelligence feed status
+	case endpoint == "feeds" && r.Method == http.MethodGet:
+		feedStatusesLock.Lock()
+		out := append([]FeedStatus{}, feedStatuses...)
+		feedStatusesLock.Unlock()
+		if out == nil {
+			out = []FeedStatus{}
+		}
 		json.NewEncoder(w).Encode(out)
 
 	// ── Zero-Trust Tool Approval endpoints ──────────────────────────
@@ -2717,6 +3051,7 @@ func main() {
 	go cleanupSessionHistory()
 	go cleanupRateLimiters()
 	go cleanupExpiredApprovals()
+	go startThreatFeeds()
 
 	targetURL := os.Getenv("TARGET_URL")
 	if targetURL == "" {

@@ -556,23 +556,65 @@ function Health({data,recentBlocks}){
 
 /* ═══ POLICY ═══ */
 /* ── PostureConfig — editable security posture blocks ── */
-function PostureConfig({pol,isAdmin,setField,addTool,removeTool}){
-  const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false});
+function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool}){
+  const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false,webhooks:false,feeds:false});
   const[newTool,setNewTool]=useState('');
+  const[testingIdx,setTestingIdx]=useState(null);
+  const[testResults,setTestResults]=useState({});
+  const testWebhook=async(idx)=>{
+    setTestingIdx(idx);
+    try{const r=await api('webhook/test',{method:'POST',body:JSON.stringify({index:idx})});const d=await r.json();setTestResults(p=>({...p,[idx]:d}));}
+    catch(e){setTestResults(p=>({...p,[idx]:{error:String(e)}}));}
+    setTestingIdx(null);
+  };
+  // Webhook CRUD helpers
+  const addWebhook=()=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));if(!n.webhooks)n.webhooks=[];
+      n.webhooks.push({enabled:true,name:'New SIEM',url:'',format:'generic',events:['BLOCKED','REDACTED'],timeout_ms:3000,include_payload:false});return n;});
+    setDirty(true);
+  };
+  const removeWebhook=idx=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks.splice(idx,1);return n;});setDirty(true);
+  };
+  const setWebhookField=(idx,field,val)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks[idx][field]=val;return n;});setDirty(true);
+  };
+  const toggleWebhookEvent=(idx,ev)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));const evs=n.webhooks[idx].events||[];
+      n.webhooks[idx].events=evs.includes(ev)?evs.filter(e=>e!==ev):[...evs,ev];return n;});setDirty(true);
+  };
+  // Feed CRUD helpers
+  const addFeed=()=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));if(!n.threat_feeds)n.threat_feeds={enabled:true,feeds:[]};if(!n.threat_feeds.feeds)n.threat_feeds.feeds=[];
+      n.threat_feeds.feeds.push({enabled:true,name:'New Feed',url:'',scanner:'prompt_injection',interval_minutes:60});return n;});setDirty(true);
+  };
+  const removeFeed=idx=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds.splice(idx,1);return n;});setDirty(true);
+  };
+  const setFeedField=(idx,field,val)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds[idx][field]=val;return n;});setDirty(true);
+  };
   const sc=pol?.scanners;
   if(!sc)return null;
 
-  const Toggle=({path,checked})=>(
+  const Toggle=({path,checked,top})=>(
     isAdmin
-      ?<div className={`sq-toggle ${checked?'on':''}`} onClick={()=>setField(path,!checked)} style={{cursor:'pointer'}}/>
+      ?<div className={`sq-toggle ${checked?'on':''}`} onClick={()=>top?setTopField(path,!checked):setField(path,!checked)} style={{cursor:'pointer'}}/>
       :<span className="ro-val">{checked?'enabled':'disabled'}</span>
   );
 
-  const NumInput=({path,value,min=0,max,step=1,note})=>(
+  const NumInput=({path,value,min=0,max,step=1,note,top})=>(
     isAdmin
       ?<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:2}}>
           <input type="number" className="cfg-num" value={value??''} min={min} max={max} step={step}
-            onChange={e=>setField(path,+e.target.value)} disabled={!isAdmin}/>
+            onChange={e=>top?setTopField(path,+e.target.value):setField(path,+e.target.value)} disabled={!isAdmin}/>
           {note&&<span style={{fontSize:9,color:'var(--t3)'}}>{note}</span>}
         </div>
       :<span className="ro-val">{value}</span>
@@ -689,6 +731,158 @@ function PostureConfig({pol,isAdmin,setField,addTool,removeTool}){
           <NumInput path={['blast_radius','max_high_risk_calls_per_session']} value={sc.blast_radius?.max_high_risk_calls_per_session} min={1}/>
         </CfgRow>
       </Block>
+
+      {/* SIEM / Webhooks — multiple destinations */}
+      <Block id="webhooks" name="SIEM / Webhooks" slug="/webhooks">
+        <div style={{fontSize:11,color:'var(--t3)',marginBottom:12}}>
+          Each destination fires independently on its configured events. Supports Slack, Splunk HEC, PagerDuty, and any generic JSON endpoint.
+        </div>
+        {(pol?.webhooks||[]).length===0&&<div style={{fontSize:11,color:'var(--t3)',marginBottom:10}}>No SIEM destinations configured yet.</div>}
+        {(pol?.webhooks||[]).map((wh,idx)=>(
+          <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:10,overflow:'hidden'}}>
+            {/* Header row */}
+            <div style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
+              <div className={`sq-toggle ${wh.enabled?'on':''}`} onClick={()=>isAdmin&&setWebhookField(idx,'enabled',!wh.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              {isAdmin
+                ?<input value={wh.name||''} onChange={e=>setWebhookField(idx,'name',e.target.value)}
+                    style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
+                    placeholder="SIEM name…"/>
+                :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{wh.name||'Unnamed'}</span>
+              }
+              {isAdmin&&<button onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
+            </div>
+            {/* Fields */}
+            <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
+              <CfgRow label="URL" sub="">
+                {isAdmin
+                  ?<input value={wh.url||''} onChange={e=>setWebhookField(idx,'url',e.target.value)}
+                      style={{width:260,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}
+                      placeholder="https://…"/>
+                  :<span className="ro-val">{wh.url||'not set'}</span>}
+              </CfgRow>
+              <CfgRow label="Format" sub="">
+                {isAdmin
+                  ?<select value={wh.format||'generic'} onChange={e=>setWebhookField(idx,'format',e.target.value)}
+                      style={{padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,outline:'none',cursor:'pointer'}}>
+                      <option value="generic">Generic JSON</option>
+                      <option value="slack">Slack Block Kit</option>
+                      <option value="splunk">Splunk HEC</option>
+                    </select>
+                  :<span className="ro-val">{wh.format||'generic'}</span>}
+              </CfgRow>
+              <div>
+                <div className="cfg-label" style={{marginBottom:6}}>Events</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {['BLOCKED','REDACTED','AUTO_REPAVE','BLAST_RADIUS','ANOMALY','CANARY_ROTATED','TOOL_APPROVED','TOOL_DENIED'].map(ev=>{
+                    const on=(wh.events||[]).includes(ev);
+                    return<span key={ev} onClick={()=>isAdmin&&toggleWebhookEvent(idx,ev)}
+                      style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,cursor:isAdmin?'pointer':'default',
+                        background:on?'var(--purple-d)':'var(--b1)',color:on?'var(--purple)':'var(--t3)',
+                        border:`1px solid ${on?'rgba(168,85,247,.35)':'var(--b2)'}`}}>
+                      {ev}
+                    </span>;
+                  })}
+                </div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginTop:4}}>
+                <CfgRow label="Timeout (ms)" sub="">
+                  {isAdmin
+                    ?<input type="number" className="cfg-num" value={wh.timeout_ms||3000} min={200} max={10000} step={100}
+                        onChange={e=>setWebhookField(idx,'timeout_ms',+e.target.value)}/>
+                    :<span className="ro-val">{wh.timeout_ms||3000}</span>}
+                </CfgRow>
+                <CfgRow label="Include payload" sub="">
+                  <div className={`sq-toggle ${wh.include_payload?'on':''}`}
+                    onClick={()=>isAdmin&&setWebhookField(idx,'include_payload',!wh.include_payload)}
+                    style={{cursor:isAdmin?'pointer':'default'}}/>
+                </CfgRow>
+                {isAdmin&&(
+                  <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+                    <button onClick={()=>testWebhook(idx)} disabled={testingIdx===idx||!wh.url}
+                      style={{padding:'4px 12px',border:'1px solid var(--b2)',borderRadius:'var(--r)',fontSize:11,color:'var(--t2)',background:'var(--s2)',cursor:'pointer'}}>
+                      {testingIdx===idx?'Sending…':'Test →'}
+                    </button>
+                    {testResults[idx]&&(
+                      <span style={{fontSize:11,color:testResults[idx].error?'var(--red)':'var(--green)'}}>
+                        {testResults[idx].error?'✗ '+testResults[idx].error:'✓ '+testResults[idx].tested+' sent'}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+        {isAdmin&&<button onClick={addWebhook} className="tag-add-btn" style={{width:'100%',padding:'7px',textAlign:'center'}}>+ Add SIEM destination</button>}
+      </Block>
+
+      {/* Threat Intelligence Feeds */}
+      <Block id="feeds" name="Threat Intelligence Feeds" slug="/threat_feeds">
+        <CfgRow label="Enabled" sub="Pull live malicious patterns from external URLs and apply them in-memory alongside policy.yaml">
+          <Toggle path={['threat_feeds','enabled']} checked={!!pol?.threat_feeds?.enabled} top/>
+        </CfgRow>
+        <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.7,padding:'4px 0 10px'}}>
+          Feed URLs must return: <code>{'{"version":"1.0","rules":[{"rule":"regex","enabled":true}]}'}</code>
+        </div>
+        {(pol?.threat_feeds?.feeds||[]).length===0&&<div style={{fontSize:11,color:'var(--t3)',marginBottom:10}}>No feeds configured yet.</div>}
+        {(pol?.threat_feeds?.feeds||[]).map((feed,idx)=>(
+          <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:8,overflow:'hidden'}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
+              <div className={`sq-toggle ${feed.enabled?'on':''}`} onClick={()=>isAdmin&&setFeedField(idx,'enabled',!feed.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              {isAdmin
+                ?<input value={feed.name||''} onChange={e=>setFeedField(idx,'name',e.target.value)}
+                    style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
+                    placeholder="Feed name…"/>
+                :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{feed.name||'Unnamed'}</span>
+              }
+              {isAdmin&&<button onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
+            </div>
+            <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
+              <CfgRow label="URL" sub="Must serve the AgentArmor feed JSON format">
+                {isAdmin
+                  ?<input value={feed.url||''} onChange={e=>setFeedField(idx,'url',e.target.value)}
+                      style={{width:260,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}
+                      placeholder="https://gist.githubusercontent.com/…"/>
+                  :<span className="ro-val" style={{fontFamily:'monospace',fontSize:11}}>{feed.url||'not set'}</span>}
+              </CfgRow>
+              <CfgRow label="Scanner" sub="Which scanner applies these rules">
+                {isAdmin
+                  ?<select value={feed.scanner||'prompt_injection'} onChange={e=>setFeedField(idx,'scanner',e.target.value)}
+                      style={{padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,outline:'none',cursor:'pointer'}}>
+                      <option value="prompt_injection">Prompt Injection</option>
+                      <option value="malicious_content">Malicious Content</option>
+                      <option value="pii">PII / DLP</option>
+                      <option value="secrets">Secrets</option>
+                    </select>
+                  :<span className="ro-val">{feed.scanner}</span>}
+              </CfgRow>
+              <CfgRow label="Poll interval (min)" sub="How often to refresh from the URL">
+                {isAdmin
+                  ?<input type="number" className="cfg-num" value={feed.interval_minutes||60} min={1} onChange={e=>setFeedField(idx,'interval_minutes',+e.target.value)}/>
+                  :<span className="ro-val">{feed.interval_minutes} min</span>}
+              </CfgRow>
+              <FeedStatus url={feed.url}/>
+            </div>
+          </div>
+        ))}
+        {isAdmin&&<button onClick={addFeed} className="tag-add-btn" style={{width:'100%',padding:'7px',textAlign:'center'}}>+ Add intelligence feed</button>}
+      </Block>
+    </div>
+  );
+}
+
+function FeedStatus({url}){
+  const[status,setStatus]=useState(null);
+  useEffect(()=>{
+    if(!url)return;
+    const load=()=>api('feeds').then(r=>r.json()).then(d=>{const s=(d||[]).find(f=>f.url===url);setStatus(s||null);}).catch(()=>{});
+    load();const t=setInterval(load,15000);return()=>clearInterval(t);
+  },[url]);
+  if(!status)return null;
+  return(
+    <div style={{display:'flex',gap:16,fontSize:10,color:'var(--t3)',marginTop:2}}>
+      <span style={{color:status.last_error?'var(--red)':'var(--green)'}}>{status.last_error?'✗ '+status.last_error:'✓ '+status.rule_count+' rules active'}</span>
+      {status.last_fetched&&<span>last: {status.last_fetched.slice(11,19)}</span>}
     </div>
   );
 }
@@ -712,13 +906,25 @@ function Policy({role}){
     setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners[key].enabled=!n.scanners[key].enabled;return n;});
     setDirty(true);
   };
-  // Generic setter for nested scalar fields: path is an array of keys, e.g. ['auto_repave','triggers','canary_detections']
+  // Setter for scanners.* nested fields
   const setField=(path,value)=>{
     if(!isAdmin)return;
     setPol(p=>{
       const n=JSON.parse(JSON.stringify(p));
       let obj=n.scanners;
       for(let i=0;i<path.length-1;i++) obj=obj[path[i]];
+      obj[path[path.length-1]]=value;
+      return n;
+    });
+    setDirty(true);
+  };
+  // Setter for top-level fields (webhook, threat_feeds)
+  const setTopField=(path,value)=>{
+    if(!isAdmin)return;
+    setPol(p=>{
+      const n=JSON.parse(JSON.stringify(p));
+      let obj=n;
+      for(let i=0;i<path.length-1;i++){if(!obj[path[i]])obj[path[i]]={};obj=obj[path[i]];}
       obj[path[path.length-1]]=value;
       return n;
     });
@@ -845,7 +1051,7 @@ function Policy({role}){
           })}
 
           {/* ── Security Posture Config ── */}
-          <PostureConfig pol={pol} isAdmin={isAdmin} setField={setField} addTool={addTool} removeTool={removeTool}/>
+          <PostureConfig pol={pol} isAdmin={isAdmin} setField={setField} setTopField={setTopField} addTool={addTool} removeTool={removeTool}/>
         </div>
         <div className="col-side">
           <div className="inspector">
