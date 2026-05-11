@@ -1,7 +1,4 @@
 <p align="center">
-  <img src="assets/logo.png" alt="AgentArmor" width="100" />
-</p>
-<p align="center">
   <img src="assets/banner.png" alt="AgentArmor — Defense-in-depth for AI agents" width="700" />
 </p>
 <p align="center">
@@ -115,13 +112,26 @@ OPENCLAW_GATEWAY_TOKEN="..."
 
 Each request passes through the pipeline in order. First match wins.
 
-```
-Rate Limit → GoalLock Canary → Prompt Injection (regex) → LLM Scanner
-→ Internal IP / DNS Rebinding → Presidio PII → PII / DLP → Malicious Content
-→ Secret Redaction → Intent Scoring → Anomaly Scoring → Zero-Trust Approval
-→ Blast Radius Check → iptables Firewall → LLM Provider
-                                           ↓ response
-                               Streaming DLP (sliding window)
+```text
+[Client Request]
+       │
+       ▼
+[ Rate Limit ] ─▶ [ GoalLock Canary ] ─▶ [ Prompt Injection ] ─▶ [ LLM Scanner ] ─┐
+                                                                                  │
+┌─────────────────────────────────────────────────────────────────────────────────┘
+▼
+[ IP/DNS Rebinding ] ─▶ [ Presidio PII ] ─▶ [ PII / DLP ] ─▶ [ Malicious Content ] ─┐
+                                                                                    │
+┌───────────────────────────────────────────────────────────────────────────────────┘
+▼
+[ Secret Redaction ] ─▶ [ Intent Scoring ] ─▶ [ Anomaly Scoring ] ─▶ [ Zero-Trust ] ─┐
+                                                                                     │
+┌────────────────────────────────────────────────────────────────────────────────────┘
+▼
+[ Blast Radius ] ─▶ [ iptables Firewall ] ─▶ [ LLM Provider ]
+                                                    │
+                                                    ▼ (Response)
+[ Client ] ◀── [ Streaming DLP (Sliding Window) ] ◀─┘
 ```
 
 Clean requests have the active skill's system prompt + RAG context + GoalLock canary injected before forwarding. All decisions are logged to SQLite.
