@@ -556,51 +556,11 @@ function Health({data,recentBlocks}){
 
 /* ═══ POLICY ═══ */
 /* ── PostureConfig — editable security posture blocks ── */
-function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool}){
+function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
+    addWebhook,removeWebhook,setWebhookField,toggleWebhookEvent,
+    addFeed,removeFeed,setFeedField,testWebhook,testingIdx,testResults}){
   const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false,webhooks:false,feeds:false});
   const[newTool,setNewTool]=useState('');
-  const[testingIdx,setTestingIdx]=useState(null);
-  const[testResults,setTestResults]=useState({});
-  const testWebhook=async(idx)=>{
-    setTestingIdx(idx);
-    try{const r=await api('webhook/test',{method:'POST',body:JSON.stringify({index:idx})});const d=await r.json();setTestResults(p=>({...p,[idx]:d}));}
-    catch(e){setTestResults(p=>({...p,[idx]:{error:String(e)}}));}
-    setTestingIdx(null);
-  };
-  // Webhook CRUD helpers
-  const addWebhook=()=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));if(!n.webhooks)n.webhooks=[];
-      n.webhooks.push({enabled:true,name:'New SIEM',url:'',format:'generic',events:['BLOCKED','REDACTED'],timeout_ms:3000,include_payload:false});return n;});
-    setDirty(true);
-  };
-  const removeWebhook=idx=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks.splice(idx,1);return n;});setDirty(true);
-  };
-  const setWebhookField=(idx,field,val)=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks[idx][field]=val;return n;});setDirty(true);
-  };
-  const toggleWebhookEvent=(idx,ev)=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));const evs=n.webhooks[idx].events||[];
-      n.webhooks[idx].events=evs.includes(ev)?evs.filter(e=>e!==ev):[...evs,ev];return n;});setDirty(true);
-  };
-  // Feed CRUD helpers
-  const addFeed=()=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));if(!n.threat_feeds)n.threat_feeds={enabled:true,feeds:[]};if(!n.threat_feeds.feeds)n.threat_feeds.feeds=[];
-      n.threat_feeds.feeds.push({enabled:true,name:'New Feed',url:'',scanner:'prompt_injection',interval_minutes:60});return n;});setDirty(true);
-  };
-  const removeFeed=idx=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds.splice(idx,1);return n;});setDirty(true);
-  };
-  const setFeedField=(idx,field,val)=>{
-    if(!isAdmin)return;
-    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds[idx][field]=val;return n;});setDirty(true);
-  };
   const sc=pol?.scanners;
   if(!sc)return null;
 
@@ -951,6 +911,51 @@ function Policy({role}){
     });
     setDirty(true);
   };
+  // ── Webhook CRUD (need setPol + setDirty from Policy scope) ──
+  const[testingIdx,setTestingIdx]=useState(null);
+  const[testResults,setTestResults]=useState({});
+  const testWebhook=async(idx)=>{
+    setTestingIdx(idx);
+    try{const r=await api('webhook/test',{method:'POST',body:JSON.stringify({index:idx})});const d=await r.json();setTestResults(p=>({...p,[idx]:d}));}
+    catch(e){setTestResults(p=>({...p,[idx]:{error:String(e)}}));}
+    setTestingIdx(null);
+  };
+  const addWebhook=()=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));if(!Array.isArray(n.webhooks))n.webhooks=[];
+      n.webhooks.push({enabled:true,name:'New SIEM',url:'',format:'generic',events:['BLOCKED','REDACTED'],timeout_ms:3000,include_payload:false});return n;});
+    setDirty(true);
+  };
+  const removeWebhook=idx=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks.splice(idx,1);return n;});setDirty(true);
+  };
+  const setWebhookField=(idx,field,val)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.webhooks[idx][field]=val;return n;});setDirty(true);
+  };
+  const toggleWebhookEvent=(idx,ev)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));const evs=n.webhooks[idx].events||[];
+      n.webhooks[idx].events=evs.includes(ev)?evs.filter(e=>e!==ev):[...evs,ev];return n;});setDirty(true);
+  };
+  // ── Feed CRUD ──
+  const addFeed=()=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));
+      if(!n.threat_feeds)n.threat_feeds={enabled:true,feeds:[]};
+      if(!Array.isArray(n.threat_feeds.feeds))n.threat_feeds.feeds=[];
+      n.threat_feeds.feeds.push({enabled:true,name:'New Feed',url:'',scanner:'prompt_injection',interval_minutes:60});return n;});
+    setDirty(true);
+  };
+  const removeFeed=idx=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds.splice(idx,1);return n;});setDirty(true);
+  };
+  const setFeedField=(idx,field,val)=>{
+    if(!isAdmin)return;
+    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.threat_feeds.feeds[idx][field]=val;return n;});setDirty(true);
+  };
   const save=async()=>{setSaving(true);await api('policy',{method:'POST',body:JSON.stringify(pol)});setSaving(false);setDirty(false);};
   const testMatches=useMemo(()=>{
     if(!pol||!testInput.trim())return[];
@@ -1029,18 +1034,58 @@ function Policy({role}){
                     <thead><tr>
                       <th width="20"></th>
                       <th>Pattern</th>
-                      <th width="70">Hits 24h</th>
-                      <th width="90">12h Trend</th>
-                      <th width="80">Last Hit</th>
+                      {g.key==='secrets'&&<th width="110">Strategy</th>}
+                      {g.key==='secrets'&&<th width="160">Replacement / Options</th>}
                       <th width="20"></th>
                     </tr></thead>
                     <tbody>{rl.map((rule,i)=>(
                       <tr key={i} onClick={()=>setSelectedRule({...rule,scanner:g.name,path:g.slug})} style={{cursor:'pointer'}}>
                         <td><div className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
                         <td><span className="rule-pattern" style={{color:rule.enabled?'var(--t2)':'var(--t3)'}}>{rule.rule}</span></td>
-                        <td><span className="rule-hits">—</span></td>
-                        <td><Sparkline data={[]} color="#ef4444" w={80} h={20}/></td>
-                        <td><span className="rule-last">never</span></td>
+                        {g.key==='secrets'&&(
+                          <td onClick={ev=>ev.stopPropagation()}>
+                            {isAdmin
+                              ?<select value={rule.strategy||'replace'}
+                                  onChange={ev=>{
+                                    if(!isAdmin)return;
+                                    setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners.secrets.redact_patterns[i].strategy=ev.target.value;return n;});setDirty(true);
+                                  }}
+                                  style={{padding:'2px 6px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:10,cursor:'pointer',outline:'none'}}>
+                                  <option value="replace">Replace</option>
+                                  <option value="hash">Hash (SHA-256)</option>
+                                  <option value="mask">Mask</option>
+                                  <option value="remove">Remove</option>
+                                </select>
+                              :<span style={{fontSize:10,color:'var(--t3)',padding:'1px 6px',border:'1px solid var(--b2)',borderRadius:10}}>{rule.strategy||'replace'}</span>
+                            }
+                          </td>
+                        )}
+                        {g.key==='secrets'&&(
+                          <td onClick={ev=>ev.stopPropagation()} style={{fontSize:11}}>
+                            {(rule.strategy||'replace')==='replace'&&(
+                              isAdmin
+                                ?<input value={rule.replacement||''} placeholder="[REDACTED]"
+                                    onChange={ev=>{setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners.secrets.redact_patterns[i].replacement=ev.target.value;return n;});setDirty(true);}}
+                                    style={{width:140,padding:'2px 6px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:10,outline:'none',fontFamily:'monospace'}}/>
+                                :<span style={{color:'var(--t3)',fontFamily:'monospace',fontSize:10}}>{rule.replacement||'[REDACTED]'}</span>
+                            )}
+                            {rule.strategy==='mask'&&(
+                              <span style={{color:'var(--t3)',display:'flex',alignItems:'center',gap:4}}>
+                                {isAdmin?<>
+                                  <input type="number" value={rule.mask_prefix||0} min={0} max={20}
+                                    onChange={ev=>{setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners.secrets.redact_patterns[i].mask_prefix=+ev.target.value;return n;});setDirty(true);}}
+                                    style={{width:36,padding:'2px 4px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:10,textAlign:'center',outline:'none'}}/>
+                                  <span>…</span>
+                                  <input type="number" value={rule.mask_suffix||0} min={0} max={20}
+                                    onChange={ev=>{setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners.secrets.redact_patterns[i].mask_suffix=+ev.target.value;return n;});setDirty(true);}}
+                                    style={{width:36,padding:'2px 4px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:10,textAlign:'center',outline:'none'}}/>
+                                </>:<span>{rule.mask_prefix||0}…{rule.mask_suffix||0} chars</span>}
+                              </span>
+                            )}
+                            {rule.strategy==='hash'&&<span style={{color:'var(--t3)',fontSize:10}}>SHA-256[:8]</span>}
+                            {rule.strategy==='remove'&&<span style={{color:'var(--red)',fontSize:10}}>stripped entirely</span>}
+                          </td>
+                        )}
                         <td><span className="rule-arrow">→</span></td>
                       </tr>
                     ))}</tbody>
@@ -1051,7 +1096,13 @@ function Policy({role}){
           })}
 
           {/* ── Security Posture Config ── */}
-          <PostureConfig pol={pol} isAdmin={isAdmin} setField={setField} setTopField={setTopField} addTool={addTool} removeTool={removeTool}/>
+          <PostureConfig pol={pol} isAdmin={isAdmin}
+            setField={setField} setTopField={setTopField}
+            addTool={addTool} removeTool={removeTool}
+            addWebhook={addWebhook} removeWebhook={removeWebhook}
+            setWebhookField={setWebhookField} toggleWebhookEvent={toggleWebhookEvent}
+            addFeed={addFeed} removeFeed={removeFeed} setFeedField={setFeedField}
+            testWebhook={testWebhook} testingIdx={testingIdx} testResults={testResults}/>
         </div>
         <div className="col-side">
           <div className="inspector">
@@ -1095,7 +1146,8 @@ function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefresh
     if(q){const ql=q.toLowerCase();d=d.filter(e=>['rule_matched','direction','payload_snippet'].some(k=>(e[k]||'').toLowerCase().includes(ql)));}
     return d;
   },[events,q,f,dir]);
-  const total=events.length,allowed=events.filter(e=>e.action==='ALLOWED').length,redacted=events.filter(e=>e.action==='REDACTED').length,blocked=events.filter(e=>e.action==='BLOCKED').length;
+  const ev=events||[];
+  const total=ev.length,allowed=ev.filter(e=>e.action==='ALLOWED').length,redacted=ev.filter(e=>e.action==='REDACTED').length,blocked=ev.filter(e=>e.action==='BLOCKED').length;
   return(
     <div>
       <div style={{padding:'24px 24px 0'}}>
@@ -1225,23 +1277,78 @@ function Firewall({fw,audit}){
 
 /* ═══ SKILLS ═══ */
 const ICONS={'security-engineer':'🔐','security-auditor':'📋','software-developer':'💻','software-qa':'✅','cloud-engineer':'☁️'};
-function Skills({skills}){
+function Skills({skills,role,onSkillsChange}){
+  const[toggling,setToggling]=useState(null);
   if(!skills)return<div className="empty loading">Loading skills…</div>;
   if(!skills.length)return<div className="empty">No skills loaded. Add directories under <code style={{color:'var(--purple)'}}>./skills/</code> and restart.</div>;
+
+  const activeCount=skills.filter(s=>s.active).length;
+  const isAdmin=role==='admin';
+
+  const toggle=async(id)=>{
+    setToggling(id);
+    await api('skills/toggle',{method:'POST',body:JSON.stringify({id})});
+    onSkillsChange(); // reload from parent
+    setToggling(null);
+  };
+
   return(
     <div className="skills-main">
-      <div className="page-label"><span className="page-label-dot"/><span>Skills</span><span>·</span><span>{skills.length} Active</span></div>
-      <h1 className="page-headline" style={{marginBottom:24}}>Role-specific <span className="accent">AI personas</span><br/>with RAG knowledge.</h1>
+      <div className="page-label"><span className="page-label-dot"/><span>Skills</span><span>·</span><span>{skills.length} loaded · {activeCount} globally active</span></div>
+      <h1 className="page-headline" style={{marginBottom:8}}>Role-specific <span className="accent">AI personas</span><br/>with RAG knowledge.</h1>
+      <p style={{fontSize:12,color:'var(--t3)',marginBottom:16,lineHeight:1.7,maxWidth:560}}>
+        Admin-activated skills apply to <b style={{color:'var(--t2)'}}>all requests</b> automatically — no header needed.
+        Clients can still override with <code>X-AgentArmor-Skill: &lt;id&gt;</code> or let keyword auto-detection pick one.
+      </p>
+      {/* Semantic RAG status banner */}
+      {skills.some(s=>s.embedded_docs>0)
+        ?<div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'8px 12px',border:'1px solid rgba(167,139,250,.3)',borderRadius:'var(--r)',background:'var(--purple-d)',marginBottom:16,fontSize:11}}>
+            <span style={{color:'var(--purple)',fontWeight:700}}>⬡ Semantic RAG active</span>
+            <span style={{color:'var(--muted)'}}>·</span>
+            <span style={{color:'var(--t3)'}}>{skills.reduce((a,s)=>a+s.embedded_docs,0)}/{skills.reduce((a,s)=>a+s.docs,0)} docs embedded</span>
+            <span style={{color:'var(--muted)'}}>·</span>
+            <span style={{color:'var(--t3)'}}>cosine similarity retrieval</span>
+            <span style={{color:'var(--muted)'}}>·</span>
+            <span style={{color:'var(--green)',fontWeight:600}}>⟳ auto-routing on</span>
+            <span style={{color:'var(--t3)',marginLeft:4}}>messages automatically matched to the closest skill</span>
+          </div>
+        :<div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'7px 12px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'var(--s2)',marginBottom:16,fontSize:11,color:'var(--t3)'}}>
+            <span>⬡ BM25 keyword retrieval · auto-routing off</span>
+            <span style={{color:'var(--muted)'}}>·</span>
+            <span>Enable: <code>skills_rag.enabled: true</code> + <code>ollama pull nomic-embed-text</code></span>
+          </div>
+      }
       <div className="skills-grid">
         {skills.map(s=>(
-          <div key={s.id} className="skill-card">
-            <div className="skill-icon">{ICONS[s.id]||'🧠'}</div>
+          <div key={s.id} className="skill-card" style={{borderColor:s.active?'var(--purple)':''}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+              <div className="skill-icon" style={{marginBottom:0}}>{ICONS[s.id]||'🧠'}</div>
+              {isAdmin?(
+                <button onClick={()=>toggle(s.id)} disabled={toggling===s.id}
+                  style={{padding:'3px 10px',borderRadius:10,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,transition:'all .15s',
+                    background:s.active?'var(--purple)':'var(--b2)',
+                    color:s.active?'#fff':'var(--t3)',
+                    opacity:toggling===s.id?.6:1}}>
+                  {toggling===s.id?'…':s.active?'● Active':'Activate'}
+                </button>
+              ):(
+                s.active&&<span style={{fontSize:10,color:'var(--purple)',fontWeight:700,padding:'2px 8px',border:'1px solid var(--purple)',borderRadius:10}}>● Active</span>
+              )}
+            </div>
             <div className="skill-name">{s.name}</div>
             <div className="skill-desc">{s.description}</div>
-            <div className="skill-footer"><span className="skill-docs">{s.docs} knowledge docs</span><span className="skill-id">{s.id}</span></div>
+            <div className="skill-footer">
+              <span className="skill-docs">{s.docs} knowledge docs</span>
+              <span className="skill-id">{s.id}</span>
+            </div>
           </div>
         ))}
       </div>
+      {activeCount>1&&(
+        <p style={{marginTop:14,fontSize:11,color:'var(--dim)',lineHeight:1.7}}>
+          <b style={{color:'var(--t2)'}}>Multiple skills active:</b> system prompts and RAG knowledge from all {activeCount} skills are merged in order before each request.
+        </p>
+      )}
     </div>
   );
 }
@@ -1658,7 +1765,7 @@ function App(){
         {tab==='policy'   &&<Policy   role={role}/>}
         {tab==='audit'    &&<Audit    events={audit} onRefresh={loadAudit} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} refreshMs={refreshMs} setRefreshMs={setRefreshMs}/>}
         {tab==='firewall' &&<Firewall fw={fw} audit={audit}/>}
-        {tab==='skills'   &&<Skills   skills={skills}/>}
+        {tab==='skills'   &&<Skills   skills={skills} role={role} onSkillsChange={loadSkills}/>}
         {tab==='repave'   &&<Repave   role={role}/>}
       </main>
 

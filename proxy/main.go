@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -42,6 +43,12 @@ var dashboardHTML []byte
 type Rule struct {
 	Rule    string `yaml:"rule" json:"rule"`
 	Enabled bool   `yaml:"enabled" json:"enabled"`
+	// Redaction strategy fields — only used by secrets.redact_patterns.
+	// strategy: replace (default) | hash | mask | remove
+	Strategy    string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Replacement string `yaml:"replacement,omitempty" json:"replacement,omitempty"`
+	MaskPrefix  int    `yaml:"mask_prefix,omitempty" json:"mask_prefix,omitempty"`
+	MaskSuffix  int    `yaml:"mask_suffix,omitempty" json:"mask_suffix,omitempty"`
 }
 
 type Config struct {
@@ -113,18 +120,25 @@ type Config struct {
 			AutoDenyAfterMinutes int      `yaml:"auto_deny_after_minutes" json:"auto_deny_after_minutes"`
 		} `yaml:"zero_trust_tools" json:"zero_trust_tools"`
 		BlastRadius struct {
-			Enabled                   bool `yaml:"enabled" json:"enabled"`
+			Enabled                    bool `yaml:"enabled" json:"enabled"`
 			MaxToolCallsPerSession     int  `yaml:"max_tool_calls_per_session" json:"max_tool_calls_per_session"`
 			MaxBlocksPerSession        int  `yaml:"max_blocks_per_session" json:"max_blocks_per_session"`
 			MaxHighRiskCallsPerSession int  `yaml:"max_high_risk_calls_per_session" json:"max_high_risk_calls_per_session"`
 		} `yaml:"blast_radius" json:"blast_radius"`
 	} `yaml:"scanners" json:"scanners"`
 	// Multiple SIEM destinations — each fires independently on matching events.
-	Webhooks []WebhookEntry `yaml:"webhooks" json:"webhooks"`
+	Webhooks    []WebhookEntry `yaml:"webhooks" json:"webhooks"`
 	ThreatFeeds struct {
 		Enabled bool        `yaml:"enabled" json:"enabled"`
 		Feeds   []FeedEntry `yaml:"feeds" json:"feeds"`
 	} `yaml:"threat_feeds" json:"threat_feeds"`
+	SkillsRAG struct {
+		Enabled            bool    `yaml:"enabled" json:"enabled"`
+		URL                string  `yaml:"url" json:"url"`
+		Model              string  `yaml:"model" json:"model"`
+		AutoRoute          bool    `yaml:"auto_route" json:"auto_route"`
+		AutoRouteThreshold float64 `yaml:"auto_route_threshold" json:"auto_route_threshold"`
+	} `yaml:"skills_rag" json:"skills_rag"`
 }
 
 type WebhookEntry struct {
@@ -209,6 +223,44 @@ var (
 )
 
 // maskToken obscures a token for safe logging, showing only the start and end.
+// applyRedaction applies the configured strategy to a matched secret value.
+//   - replace (default): substitute with rule.Replacement or "[REDACTED]"
+//   - hash: SHA-256 of the value, truncated to 8 hex chars for readability
+//   - mask: keep first MaskPrefix + last MaskSuffix chars, asterisks in between
+//   - remove: delete the match entirely (empty string)
+func applyRedaction(matched string, rule Rule) string {
+	switch rule.Strategy {
+	case "hash":
+		h := sha256.Sum256([]byte(matched))
+		return fmt.Sprintf("[REDACTED:%s]", hex.EncodeToString(h[:4]))
+	case "mask":
+		pre := rule.MaskPrefix
+		suf := rule.MaskSuffix
+		if pre < 0 {
+			pre = 0
+		}
+		if suf < 0 {
+			suf = 0
+		}
+		if len(matched) <= pre+suf {
+			return strings.Repeat("*", len(matched))
+		}
+		middle := strings.Repeat("*", len(matched)-pre-suf)
+		suffix := ""
+		if suf > 0 {
+			suffix = matched[len(matched)-suf:]
+		}
+		return matched[:pre] + middle + suffix
+	case "remove":
+		return ""
+	default: // "replace" or empty
+		if rule.Replacement != "" {
+			return rule.Replacement
+		}
+		return "[REDACTED]"
+	}
+}
+
 func maskToken(token string) string {
 	if len(token) < 8 {
 		return "********"
@@ -228,18 +280,18 @@ type AgentEvent struct {
 }
 
 type SessionState struct {
-	Events       []AgentEvent
-	ToolCounts          map[string]int
-	ApprovedTools       map[string]bool
-	DeniedTools         map[string]bool
-	TotalToolCalls      int
-	TotalBlocks         int
-	HighRiskToolCalls   int
-	BlastRadiusHit      bool
-	AnomalyScore        float64
-	AnomalyFlags        []string
-	FirstSeen           time.Time
-	LastSeen            time.Time
+	Events            []AgentEvent
+	ToolCounts        map[string]int
+	ApprovedTools     map[string]bool
+	DeniedTools       map[string]bool
+	TotalToolCalls    int
+	TotalBlocks       int
+	HighRiskToolCalls int
+	BlastRadiusHit    bool
+	AnomalyScore      float64
+	AnomalyFlags      []string
+	FirstSeen         time.Time
+	LastSeen          time.Time
 }
 
 type riskPattern struct {
@@ -332,8 +384,8 @@ func killSession(key string) {
 
 type ToolApprovalRequest struct {
 	ID          string `json:"id"`
-	SessionKey  string `json:"-"`            // full key, not sent to dashboard
-	DisplayKey  string `json:"session_key"`  // truncated for display
+	SessionKey  string `json:"-"`           // full key, not sent to dashboard
+	DisplayKey  string `json:"session_key"` // truncated for display
 	Tool        string `json:"tool"`
 	RequestedAt string `json:"requested_at"`
 	Status      string `json:"status"` // pending | approved | denied
@@ -644,10 +696,10 @@ type FeedStatus struct {
 }
 
 var (
-	threatFeedRegexes    = make(map[string][]*regexp.Regexp) // scanner key → compiled regexes
-	threatFeedRulesLock  sync.RWMutex
-	feedStatuses         []FeedStatus
-	feedStatusesLock     sync.Mutex
+	threatFeedRegexes   = make(map[string][]*regexp.Regexp) // scanner key → compiled regexes
+	threatFeedRulesLock sync.RWMutex
+	feedStatuses        []FeedStatus
+	feedStatusesLock    sync.Mutex
 )
 
 // ThreatFeedPayload is the JSON format feed URLs must return.
@@ -1431,12 +1483,16 @@ func injectSystemContext(payload, skillHeader string) string {
 	}
 
 	// Detect skill and build context.
+	// Priority: explicit header → keyword auto-detect → admin-activated skills.
 	var systemParts []string
 	if skillID := DetectSkill(skillHeader, userQuery); skillID != "" {
 		if ctx := BuildSkillContext(skillID, userQuery); ctx != "" {
 			systemParts = append(systemParts, ctx)
-			log.Printf("🎓 Skill applied: %s", skillID)
+			log.Printf("🎓 Skill applied (detected): %s", skillID)
 		}
+	} else if ctx := BuildCombinedSkillContext(userQuery); ctx != "" {
+		systemParts = append(systemParts, ctx)
+		log.Printf("🎓 Admin-activated skills applied: %v", ActiveSkillIDs())
 	}
 
 	// Always append the GoalLock canary.
@@ -2033,7 +2089,10 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 			if rule.Enabled && regex.MatchString(redactedContent) {
 				wasRedacted = true
 				matchedRules = append(matchedRules, rule.Rule)
-				redactedContent = regex.ReplaceAllString(redactedContent, "[REDACTED_API_KEY]")
+				// Apply per-rule redaction strategy (replace/hash/mask/remove)
+				redactedContent = regex.ReplaceAllStringFunc(redactedContent, func(matched string) string {
+					return applyRedaction(matched, rule)
+				})
 			}
 		}
 		if wasRedacted {
@@ -2211,14 +2270,14 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		type Entry struct {
-			ID             int            `json:"id"`
-			Timestamp      string         `json:"timestamp"`
-			ClientIP       string         `json:"client_ip"`
-			SessionKey     sql.NullString `json:"session_key"`
-			Direction      string         `json:"direction"`
-			Action         string         `json:"action"`
-			RuleMatched    string         `json:"rule_matched"`
-			PayloadSnippet string         `json:"payload_snippet"`
+			ID             int    `json:"id"`
+			Timestamp      string `json:"timestamp"`
+			ClientIP       string `json:"client_ip"`
+			SessionKey     string `json:"session_key"`
+			Direction      string `json:"direction"`
+			Action         string `json:"action"`
+			RuleMatched    string `json:"rule_matched"`
+			PayloadSnippet string `json:"payload_snippet"`
 		}
 		rows, err := db.Query(
 			`SELECT id, timestamp, client_ip, session_key, direction, action, rule_matched, payload_snippet
@@ -2232,10 +2291,13 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		entries := []Entry{}
 		for rows.Next() {
 			var e Entry
-			if err := rows.Scan(&e.ID, &e.Timestamp, &e.ClientIP, &e.SessionKey, &e.Direction, &e.Action, &e.RuleMatched, &e.PayloadSnippet); err != nil {
+			var clientIP, sessionKey sql.NullString
+			if err := rows.Scan(&e.ID, &e.Timestamp, &clientIP, &sessionKey, &e.Direction, &e.Action, &e.RuleMatched, &e.PayloadSnippet); err != nil {
 				log.Printf("⚠️ Error scanning audit log row: %v", err)
 				continue
 			}
+			e.ClientIP = clientIP.String
+			e.SessionKey = sessionKey.String
 			entries = append(entries, e)
 		}
 		json.NewEncoder(w).Encode(entries)
@@ -2306,6 +2368,28 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	// GET /armor/api/skills
 	case endpoint == "skills" && r.Method == http.MethodGet:
 		json.NewEncoder(w).Encode(ListSkills())
+
+	// POST /armor/api/skills/toggle — admin enables/disables a skill globally
+	case endpoint == "skills/toggle" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		active, ok := ToggleSkill(body.ID)
+		if !ok {
+			http.Error(w, `{"error":"skill not found"}`, http.StatusNotFound)
+			return
+		}
+		state := "deactivated"
+		if active {
+			state = "activated"
+		}
+		logAuditEvent("", "", "System", "SKILL_"+strings.ToUpper(state), body.ID, "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"id": body.ID, "active": active})
 
 	// GET /armor/api/alerts — unread security alerts (auto-repave, anomaly)
 	case endpoint == "alerts" && r.Method == http.MethodGet:
@@ -2512,6 +2596,9 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	// Serve the main dashboard HTML for all other /armor/* paths
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	w.Write(dashboardHTML)
 }
 
@@ -3110,7 +3197,7 @@ func streamAndScan(originalBody io.ReadCloser, pw *io.PipeWriter, r *http.Reques
 			// This lock is brief as it only reads the compiled regexes.
 			policyLock.RLock()
 			if policy.Scanners.Secrets.Enabled {
-				for _, regex := range compiledSecretRegexes {
+				for i, regex := range compiledSecretRegexes {
 					if regex.MatchString(window) {
 						sessionKey := r.Header.Get("Authorization")
 						if sessionKey == "" {
@@ -3118,7 +3205,8 @@ func streamAndScan(originalBody io.ReadCloser, pw *io.PipeWriter, r *http.Reques
 						}
 						log.Println("🛡️ STREAM INTERCEPT: Caught a fragmented secret!")
 						logAuditEvent(r.RemoteAddr, sessionKey, "Response", "REDACTED", "DLP Regex", window)
-						window = regex.ReplaceAllString(window, "[REDACTED_SECRET]")
+						rule := policy.Scanners.Secrets.RedactPatterns[i]
+						window = regex.ReplaceAllStringFunc(window, func(matched string) string { return applyRedaction(matched, rule) })
 					}
 				}
 			}

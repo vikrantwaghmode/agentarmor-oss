@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
@@ -27,21 +33,81 @@ type SkillConfig struct {
 }
 
 type knowledgeDoc struct {
-	title  string
-	body   string
-	tokens map[string]int // precomputed token frequencies
+	title     string
+	body      string
+	tokens    map[string]int // precomputed for BM25 fallback
+	embedding []float64      // semantic vector; nil until embedded
 }
 
+// embeddedDocCount tracks how many docs have been embedded (for dashboard status).
+var embeddedDocCount atomic.Int64
+
 type LoadedSkill struct {
-	Config SkillConfig
-	Docs   []knowledgeDoc
+	Config            SkillConfig
+	Docs              []knowledgeDoc
+	identityEmbedding []float64 // embedding of name+description+keywords for semantic routing
 }
 
 var (
 	loadedSkills   = make(map[string]*LoadedSkill)
 	skillsBasePath = "./skills"
 	skillsMu       sync.RWMutex
+
+	// Admin-activated skills — applied to all requests when no explicit
+	// X-AgentArmor-Skill header or keyword match is present.
+	adminActiveSkills   = make(map[string]bool)
+	adminActiveSkillsMu sync.RWMutex
 )
+
+// ToggleSkill enables or disables a skill globally. Returns the new state.
+func ToggleSkill(id string) (active bool, ok bool) {
+	skillsMu.RLock()
+	_, exists := loadedSkills[id]
+	skillsMu.RUnlock()
+	if !exists {
+		return false, false
+	}
+	adminActiveSkillsMu.Lock()
+	adminActiveSkills[id] = !adminActiveSkills[id]
+	active = adminActiveSkills[id]
+	adminActiveSkillsMu.Unlock()
+	return active, true
+}
+
+// ActiveSkillIDs returns all admin-activated skill IDs in stable order.
+func ActiveSkillIDs() []string {
+	adminActiveSkillsMu.RLock()
+	defer adminActiveSkillsMu.RUnlock()
+	var ids []string
+	for id, on := range adminActiveSkills {
+		if on {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// BuildCombinedSkillContext merges system prompts and RAG from all
+// admin-activated skills into a single context string.
+func BuildCombinedSkillContext(query string) string {
+	ids := ActiveSkillIDs()
+	if len(ids) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, id := range ids {
+		ctx := BuildSkillContext(id, query)
+		if ctx == "" {
+			continue
+		}
+		if i > 0 {
+			sb.WriteString("\n\n---\n\n")
+		}
+		sb.WriteString(ctx)
+	}
+	return sb.String()
+}
 
 // ──────────────────────────────────────────────
 // Initialisation
@@ -68,7 +134,160 @@ func initSkills() {
 		}
 	}
 	log.Printf("✅ %d skill(s) ready", loaded)
+
+	// Start semantic embedding in background if configured.
+	policyLock.RLock()
+	ragCfg := policy.SkillsRAG
+	policyLock.RUnlock()
+	if ragCfg.Enabled && ragCfg.URL != "" && ragCfg.Model != "" {
+		go embedAllDocs(ragCfg.URL, ragCfg.Model)
+	}
 }
+
+// ──────────────────────────────────────────────
+// Semantic RAG — Ollama Embeddings
+// ──────────────────────────────────────────────
+
+// embedAllDocs runs in a background goroutine after skills load.
+// Embeds every knowledge doc using Ollama; docs without embeddings
+// automatically fall back to BM25 at query time.
+func embedAllDocs(baseURL, model string) {
+	skillsMu.Lock()
+	// Collect all docs that need embedding
+	type target struct{ skill *LoadedSkill; idx int }
+	var targets []target
+	for _, skill := range loadedSkills {
+		for i := range skill.Docs {
+			targets = append(targets, target{skill, i})
+		}
+	}
+	skillsMu.Unlock()
+
+	// Also embed each skill's identity for semantic auto-routing.
+	for _, skill := range loadedSkills {
+		identityText := fmt.Sprintf("%s. %s. Topics: %s",
+			skill.Config.Name,
+			skill.Config.Description,
+			strings.Join(skill.Config.Keywords, ", "))
+		if emb, err := generateEmbedding(identityText, baseURL, model); err == nil {
+			skillsMu.Lock()
+			skill.identityEmbedding = emb
+			skillsMu.Unlock()
+		}
+	}
+	log.Printf("🔢 Semantic RAG: routing embeddings ready, embedding %d doc(s) with %s…", len(targets), model)
+
+	for _, t := range targets {
+		emb, err := generateEmbedding(t.skill.Docs[t.idx].body, baseURL, model)
+		if err != nil {
+			log.Printf("⚠️  Embedding failed (%s / %s): %v", t.skill.Config.ID, t.skill.Docs[t.idx].title, err)
+			continue
+		}
+		skillsMu.Lock()
+		t.skill.Docs[t.idx].embedding = emb
+		skillsMu.Unlock()
+		embeddedDocCount.Add(1)
+	}
+	log.Printf("✅ Semantic RAG: %d/%d document(s) embedded", embeddedDocCount.Load(), len(targets))
+}
+
+// generateEmbedding calls the Ollama /api/embeddings endpoint.
+func generateEmbedding(text, baseURL, model string) ([]float64, error) {
+	body, _ := json.Marshal(map[string]string{"model": model, "prompt": text})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Embedding []float64 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if len(result.Embedding) == 0 {
+		return nil, fmt.Errorf("empty embedding returned")
+	}
+	return result.Embedding, nil
+}
+
+// cosineSimilarity returns the cosine similarity between two vectors.
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// retrieveTopKSemantic finds the k most relevant docs by cosine similarity.
+// Returns nil if no docs have embeddings yet (triggers BM25 fallback).
+func retrieveTopKSemantic(docs []knowledgeDoc, queryEmb []float64, k int) []knowledgeDoc {
+	if len(queryEmb) == 0 {
+		return nil
+	}
+	type scored struct {
+		doc   knowledgeDoc
+		score float64
+	}
+	var results []scored
+	for _, doc := range docs {
+		if doc.embedding == nil {
+			continue
+		}
+		results = append(results, scored{doc, cosineSimilarity(queryEmb, doc.embedding)})
+	}
+	if len(results) == 0 {
+		return nil // no embeddings available yet
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
+	out := make([]knowledgeDoc, 0, k)
+	for i := 0; i < k && i < len(results); i++ {
+		out = append(out, results[i].doc)
+	}
+	return out
+}
+
+// detectSkillSemantic finds the best-matching skill for the query using cosine
+// similarity against pre-computed skill identity embeddings. Returns "" if no
+// skill exceeds the threshold or if embeddings are not yet ready.
+func detectSkillSemantic(queryEmb []float64, threshold float64) string {
+	if len(queryEmb) == 0 {
+		return ""
+	}
+	skillsMu.RLock()
+	defer skillsMu.RUnlock()
+
+	best, bestScore := "", threshold
+	for id, skill := range loadedSkills {
+		if skill.identityEmbedding == nil {
+			continue
+		}
+		if score := cosineSimilarity(queryEmb, skill.identityEmbedding); score > bestScore {
+			bestScore = score
+			best = id
+		}
+	}
+	return best
+}
+
+// EmbeddedDocCount returns the number of embedded knowledge docs (for dashboard).
+func EmbeddedDocCount() int64 { return embeddedDocCount.Load() }
 
 func loadSkill(dir string) *LoadedSkill {
 	cfgData, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
@@ -163,10 +382,85 @@ func DetectSkill(header, content string) string {
 			best = match{id, score}
 		}
 	}
-	if best.score >= 2 { // require at least 2 keyword hits to avoid false positives
+	if best.score >= 2 {
 		return best.id
 	}
+
+	// 4. Semantic auto-routing — embed the query and find the closest skill.
+	// Only fires when semantic RAG is enabled and auto_route is true.
+	policyLock.RLock()
+	ragCfg := policy.SkillsRAG
+	policyLock.RUnlock()
+
+	if ragCfg.Enabled && ragCfg.AutoRoute && ragCfg.URL != "" && content != "" {
+		threshold := ragCfg.AutoRouteThreshold
+		if threshold == 0 {
+			threshold = 0.70 // sensible default
+		}
+		if queryEmb, err := generateEmbedding(content, ragCfg.URL, ragCfg.Model); err == nil {
+			if id := detectSkillSemantic(queryEmb, threshold); id != "" {
+				log.Printf("🎓 Semantic auto-route → %s (threshold=%.2f)", id, threshold)
+				return id
+			}
+		}
+	}
+
 	return ""
+}
+
+// ──────────────────────────────────────────────
+
+// syncSkillsToOpenClaw writes each loaded skill into the two locations OpenClaw
+// scans at startup:
+//  1. codex-home/skills/<id>/ — the agent's skill context (used for RAG marker detection)
+//  2. plugin-skills/<id>/     — OpenClaw's registered-skills registry (shown in the UI)
+//
+// Each skill directory must contain:
+//   - SKILL.md               — description + [ARMOR-SKILL:id] marker
+//   - agents/openai.yaml     — UI metadata (display_name, short_description, default_prompt)
+//   - assets/icon-small.svg  — icon shown in the Skills tab
+func syncSkillsToOpenClaw() {
+	if _, err := os.Stat("/data/.openclaw"); os.IsNotExist(err) {
+		return // not running in OpenClaw mode
+	}
+
+	codexBase  := "/data/.openclaw/agents/main/agent/codex-home/skills"
+	pluginBase := "/data/.openclaw/plugin-skills"
+	os.MkdirAll(codexBase, 0755)
+	os.MkdirAll(pluginBase, 0755)
+
+	skillsMu.RLock()
+	defer skillsMu.RUnlock()
+
+	synced := 0
+	for id, skill := range loadedSkills {
+		for _, base := range []string{codexBase, pluginBase} {
+			dir := filepath.Join(base, id)
+			os.MkdirAll(filepath.Join(dir, "agents"), 0755)
+			os.MkdirAll(filepath.Join(dir, "assets"), 0755)
+
+			// SKILL.md — full system prompt + [ARMOR-SKILL:id] marker so the proxy
+			// can detect which skill is active from the conversation context.
+			skillMD := fmt.Sprintf("---\nname: \"%s\"\ndescription: \"%s\"\n---\n\n<!-- [ARMOR-SKILL:%s] -->\n\n# %s\n\n%s\n",
+				id, skill.Config.Description, id, skill.Config.Name, skill.Config.SystemPrompt)
+			os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0644)
+
+			// agents/openai.yaml — controls what OpenClaw shows in the Skills / Agents tab
+			agentYAML := fmt.Sprintf("interface:\n  display_name: %q\n  short_description: %q\n  default_prompt: \"Use $%s to help with this task.\"\n",
+				skill.Config.Name, skill.Config.Description, id)
+			os.WriteFile(filepath.Join(dir, "agents", "openai.yaml"), []byte(agentYAML), 0644)
+
+			// assets/icon-small.svg — minimal coloured shield icon
+			svg := fmt.Sprintf(
+				`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">`+
+					`<path fill="#a78bfa" d="M8 1L2 4v4c0 3.3 2.6 5.7 6 6.5C11.4 13.7 14 11.3 14 8V4L8 1z"/>`+
+					`<text x="8" y="10.5" text-anchor="middle" font-size="7" fill="white" font-family="monospace">%s</text>`+
+					`</svg>`, string([]rune(skill.Config.Name)[0:1]))
+			os.WriteFile(filepath.Join(dir, "assets", "icon-small.svg"), []byte(svg), 0644)
+		}
+		synced++
+	}
+	log.Printf("🔄 Synced %d skill(s) to OpenClaw codex-home and plugin-skills", synced)
 }
 
 // ──────────────────────────────────────────────
@@ -186,7 +480,23 @@ func BuildSkillContext(skillID, query string) string {
 	var sb strings.Builder
 	sb.WriteString(skill.Config.SystemPrompt)
 
-	chunks := retrieveTopK(skill.Docs, query, 3)
+	// Semantic retrieval — try first if enabled and embeddings are ready.
+	var chunks []knowledgeDoc
+	policyLock.RLock()
+	ragCfg := policy.SkillsRAG
+	policyLock.RUnlock()
+
+	if ragCfg.Enabled && ragCfg.URL != "" && query != "" {
+		if queryEmb, err := generateEmbedding(query, ragCfg.URL, ragCfg.Model); err == nil {
+			chunks = retrieveTopKSemantic(skill.Docs, queryEmb, 3)
+		}
+	}
+
+	// BM25 fallback — used when semantic is disabled, Ollama is down, or embeddings not yet ready.
+	if len(chunks) == 0 {
+		chunks = retrieveTopK(skill.Docs, query, 3)
+	}
+
 	if len(chunks) > 0 {
 		sb.WriteString("\n\n---\nRelevant reference material:\n\n")
 		for _, chunk := range chunks {
@@ -201,20 +511,32 @@ func BuildSkillContext(skillID, query string) string {
 	return sb.String()
 }
 
-// ListSkills returns a summary of all loaded skills (for dashboard/API use).
-func ListSkills() []map[string]string {
+// ListSkills returns a summary of all loaded skills including their active state.
+func ListSkills() []map[string]interface{} {
 	skillsMu.RLock()
 	defer skillsMu.RUnlock()
-	var out []map[string]string
+	adminActiveSkillsMu.RLock()
+	defer adminActiveSkillsMu.RUnlock()
+	var out []map[string]interface{}
 	for _, s := range loadedSkills {
-		out = append(out, map[string]string{
-			"id":          s.Config.ID,
-			"name":        s.Config.Name,
-			"description": s.Config.Description,
-			"docs":        fmt.Sprintf("%d", len(s.Docs)),
+		embedded := 0
+		for _, d := range s.Docs {
+			if d.embedding != nil {
+				embedded++
+			}
+		}
+		out = append(out, map[string]interface{}{
+			"id":            s.Config.ID,
+			"name":          s.Config.Name,
+			"description":   s.Config.Description,
+			"docs":          len(s.Docs),
+			"embedded_docs": embedded,
+			"active":        adminActiveSkills[s.Config.ID],
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i]["id"] < out[j]["id"] })
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["id"].(string) < out[j]["id"].(string)
+	})
 	return out
 }
 
