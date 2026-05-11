@@ -98,25 +98,20 @@ OPENCLAW_GATEWAY_TOKEN="..."
 Each request passes through the pipeline in order. First match wins.
 
 ```text
-[Client Request]
-       │
-       ▼
-[ Rate Limit ] ─▶ [ GoalLock Canary ] ─▶ [ Prompt Injection ] ─▶ [ LLM Scanner ] ─┐
-                                                                                  │
-┌─────────────────────────────────────────────────────────────────────────────────┘
-▼
-[ IP/DNS Rebinding ] ─▶ [ Presidio PII ] ─▶ [ PII / DLP ] ─▶ [ Malicious Content ] ─┐
-                                                                                    │
-┌───────────────────────────────────────────────────────────────────────────────────┘
-▼
-[ Secret Redaction ] ─▶ [ Intent Scoring ] ─▶ [ Anomaly Scoring ] ─▶ [ Zero-Trust ] ─┐
-                                                                                     │
-┌────────────────────────────────────────────────────────────────────────────────────┘
-▼
-[ Blast Radius ] ─▶ [ iptables Firewall ] ─▶ [ LLM Provider ]
-                                                    │
-                                                    ▼ (Response)
-[ Client ] ◀── [ Streaming DLP (Sliding Window) ] ◀─┘
+┌────────┐   ┌───────────────────────────────────────────────────────────────────────────────────┐   ┌────────┐
+│        │   │                           AgentArmor Security Pipeline                            │   │        │
+│        │──▶│ ┌────────────────┐   ┌────────────────┐   ┌────────────────┐   ┌────────────────┐ │──▶│        │
+│ Client │   │ │ 1. Pre-Flight  │──▶│ 2. Content L7  │──▶│ 3. Stateful    │──▶│ 4. Egress (L3) │ │   │External│
+│  App   │   │ │ • Rate Limit   │   │ • Prompt Inj.  │   │ • Intent Score │   │ • Blast Cap    │ │   │  LLMs  │
+│        │   │ │ • GoalLock     │   │ • LLM Scanner  │   │ • Anomaly Score│   │ • iptables     │ │   │        │
+│        │   │ │ • SSRF / DNS   │   │ • PII & DLP    │   │ • Zero-Trust   │   │                │ │   │        │
+│        │   │ │                │   │ • Malicious    │   │                │   │                │ │   │        │
+│        │   │ │                │   │ • Secrets      │   │                │   │                │ │   │        │
+│        │   │ └────────────────┘   └────────────────┘   └────────────────┘   └────────────────┘ │   │        │
+│        │◀──│ ───────────────────── (Streaming DLP on Response) ─────────────────────────────── │◀──│        │
+└────────┘   └─────────────────────────────────────────┬─────────────────────────────────────────┘   └────────┘
+                                                       ▼
+                                        All decisions logged to SQLite
 ```
 
 Clean requests have the active skill's system prompt + RAG context + GoalLock canary injected before forwarding. All decisions are logged to SQLite.
