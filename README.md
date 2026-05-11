@@ -211,6 +211,7 @@ allowed_domains:
   - "ollama"             # sidecar — must be listed or iptables drops it
   - "presidio-analyzer"  # sidecar
 ```
+</details>
 
 ### Skills
 
