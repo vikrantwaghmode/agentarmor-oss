@@ -240,8 +240,6 @@ agentarmor-oss/
 
 ## Roadmap
 
-- [ ] **SIEM integration** — Splunk/Elastic/PagerDuty webhook (in progress via `webhooks` config)
-- [ ] **OpenClaw native tab** — Embed dashboard as a native tab by patching OpenClaw source at build time
 - [ ] **Multi-tenancy** — Isolated policies and audit trails per application or team
 - [ ] **WASM filters** — Custom filtering logic without recompiling
 
