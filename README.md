@@ -140,7 +140,9 @@ Clean requests have the active skill's system prompt + RAG context + GoalLock ca
 
 ### `policy.yaml` — hot-reloadable, no restart needed
 
-Key sections with their defaults:
+<details>
+<summary><strong>Key sections with their defaults (Click to expand)</strong></summary>
+<br>
 
 ```yaml
 scanners:
