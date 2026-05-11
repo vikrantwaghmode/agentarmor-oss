@@ -262,7 +262,8 @@ agentarmor-oss/
 
 ## Contributing
 
-Open an issue first to discuss changes.
+Open an issue first to discuss changes or reachout to vikrant.waghmode@gmail.com
+LinkedIn: https://www.linkedin.com/in/securityhandyman/
 
 ## License
 
