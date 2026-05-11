@@ -198,7 +198,7 @@ skills_rag:
 ```
 
 ### `firewall.yaml` — egress allow-list
-
+</details>
 <details>
 <summary><strong>Egress domains (Click to expand)</strong></summary>
 <br>
