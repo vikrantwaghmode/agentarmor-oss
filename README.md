@@ -207,7 +207,7 @@ allowed_domains:
   - "ollama"             # sidecar — must be listed or iptables drops it
   - "presidio-analyzer"  # sidecar
 ```
-</br>
+
 ### Skills
 
 Five built-in personas live in `./skills/<id>/` — each has a `skill.yaml` (system prompt + keywords) and `knowledge/*.md` (RAG docs).
