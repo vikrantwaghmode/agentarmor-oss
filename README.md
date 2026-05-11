@@ -22,7 +22,7 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
 │ (Browser, IDEs, │
 │ OpenClaw, etc.) │
 └───────┬─────────┘
-        │ HTTP / WS (Port 8080)
+        │ HTTPS / WS (Port 8443)
         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       AgentArmor Environment                │
