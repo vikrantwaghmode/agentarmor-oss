@@ -60,6 +60,40 @@ AI agents can browse the web, execute code, and call APIs — but most teams shi
 
 AgentArmor provides defense-in-depth: every message is scanned, every action is logged, and the container can only reach domains you explicitly allow.
 
+## Security Posture — Assume Breach · Survive & Repave
+
+AgentArmor is built around a posture that treats AI agent compromise as inevitable, not exceptional. Every architectural decision follows three principles:
+
+### Assume Breach
+> *Treat every agent session as already compromised. Design controls that limit blast radius and detect lateral movement — not just controls that try to prevent intrusion.*
+
+Every message is scanned not to achieve perfect prevention, but to **minimise the damage when prevention fails**. The GoalLock canary, intent scoring, and DNS rebinding checks all assume that a sophisticated attacker has already partial control and look for the *next move* — exfiltration, lateral movement, or escalation.
+
+| Principle | AgentArmor implementation |
+|-----------|--------------------------|
+| Limit blast radius | iptables zero-trust egress — agent can only reach explicitly whitelisted domains |
+| Detect lateral movement | Intent scoring flags `read_file → post_request`, `exec → post_request` sequences |
+| Detect exfiltration | GoalLock canary blocks any message containing the runtime system-prompt anchor |
+| Full audit trail | Every request logged with client IP, session key, rule matched, and payload snippet |
+| Isolate sessions | Per-session rate limiting and session history — one compromised session cannot affect others |
+
+### Survive
+> *Keep the proxy operational and logging even during active attack. Degrade gracefully when sidecars fail.*
+
+AgentArmor is designed to keep running and protecting even if individual components are unavailable. Ollama, Presidio, and other sidecars fail gracefully — the proxy falls back to the regex scanner layer and continues blocking. The audit log is append-only (WAL mode SQLite) and survives container restarts.
+
+### Repave
+> *Destroy and rebuild from known-good state rather than trying to forensically clean a compromised session.*
+
+Repave is the fastest path to a clean state. Rather than attempting to remediate a compromised agent session, AgentArmor provides controls to **instantly kill all sessions**, **rotate the GoalLock canary**, and **restore a known-good policy snapshot** — all without a full container restart.
+
+| Operation | Time to clean state |
+|-----------|---------------------|
+| Kill all active sessions | < 1 s — single API call, closes all WebSocket connections |
+| Rotate GoalLock canary | < 1 s — new token generated, old one invalidated immediately |
+| Policy rollback | < 1 s — restore from SQLite snapshot, hot-reloads in seconds |
+| Full repave (container restart) | ~30 s — new container, new canary, clean session history |
+
 ## Current Features
 
 ### Layer 7 — Application Proxy
@@ -642,10 +676,28 @@ All features below are fully implemented and active out of the box.
 | **OpenClaw Skills Integration** | Skills appear natively in OpenClaw's Agents & Skills tab; proxy detects active skill via `[ARMOR-SKILL:xxx]` marker and loads RAG context automatically |
 | **Improved Block Notifications** | WS error messages are structured markdown — violation-specific icon, plain-language explanation, and a dashboard audit link |
 | **Glass-Morphism Shield Button** | AgentArmor widget injected into OpenClaw UI — dark glass card, `AA` brand mark, blinking green LED, sits above the chat input |
+| **Session Kill Switch** | `POST /armor/api/sessions/kill` instantly closes all active WebSocket connections and resets in-memory session history — the fastest path to clean state |
+| **GoalLock Canary Rotation** | `POST /armor/api/canary/rotate` generates a new runtime canary mid-run, invalidating the old one immediately — no restart required |
+| **Policy Snapshots & Rollback** | Every policy save checkpointed to SQLite; one-click rollback from the dashboard restores any prior known-good state |
 
 ## Roadmap
 
-Upcoming features not yet implemented:
+### Assume Breach · Survive & Repave — next steps
+
+These three features implement the **Repave** pillar and are shipping next:
+
+- [x] **Session kill switch** — `POST /armor/api/sessions/kill` closes all active connections and clears session history instantly
+- [x] **GoalLock canary rotation** — `POST /armor/api/canary/rotate` issues a new canary mid-run without restarting the proxy
+- [x] **Policy snapshots & rollback** — every save checkpointed; one-click restore from the dashboard
+
+Planned extensions to complete the posture:
+
+- [ ] **Automated repave trigger** — when critical events (canary detections, anomaly score) exceed a threshold, proxy automatically restarts the OpenClaw gateway and notifies via dashboard alert
+- [ ] **Session anomaly scoring** — baseline normal tool-call patterns per agent; flag statistical deviations mid-session with auto-escalation
+- [ ] **Zero-trust tool approval** — high-risk tools (`exec`, `browser`, `sessions_spawn`) require explicit per-session approval before first use
+- [ ] **Blast radius cap** — hard limit on tokens, tool calls, and outbound bytes per session regardless of policy
+
+### Other upcoming features
 
 - [ ] **SIEM integration** — Export audit logs to Splunk, Elastic, or a generic webhook
 - [ ] **Custom redaction** — User-defined redaction strings (hashing, partial masking, custom replacement)

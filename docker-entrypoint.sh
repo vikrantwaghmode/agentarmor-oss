@@ -51,7 +51,7 @@ if [ "$LLM_PROVIDER" = "openclaw" ]; then
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google/gemini-2.5-flash"
+        "primary": "google/gemini-1.5-flash-8b"
       }
     }
   },
@@ -68,11 +68,14 @@ if [ "$LLM_PROVIDER" = "openclaw" ]; then
 }
 OCEOF
 
+        echo "   💡 Tip: The default model is Gemini Flash, which has a low free-tier rate limit (e.g., 15 RPM)."
+        echo "      Ensure 'requests_per_minute' in your policy.yaml is set accordingly to avoid 429 errors."
         echo "✅ OpenClaw config written to ${OPENCLAW_CONFIG}"
         echo "🔑 Gateway token: ${TOKEN}"
         export OPENCLAW_GATEWAY_TOKEN_VALUE="${TOKEN}"
     else
         echo "✅ Using existing OpenClaw config at ${OPENCLAW_CONFIG}"
+        echo "   (To change the default model, edit the above file directly)"
         # Extract token from existing config to pass to the proxy for UI injection
         TOKEN=$(grep -oP '"token":\s*"\K[^"]+' "${OPENCLAW_CONFIG}" || echo "")
         export OPENCLAW_GATEWAY_TOKEN_VALUE="${TOKEN}"
@@ -134,6 +137,8 @@ else
             export TARGET_URL="https://generativelanguage.googleapis.com"
             export LLM_API_KEY="$GEMINI_API_KEY"
             export LLM_AUTH_HEADER_NAME="x-goog-api-key"
+            echo "   💡 Tip: The free tier for Gemini models has low rate limits (e.g., 15 RPM)."
+            echo "      Ensure 'requests_per_minute' in policy.yaml is set accordingly to avoid 429 errors."
             ;;
         *)
             echo "❌ Unknown LLM_PROVIDER: '$LLM_PROVIDER'. Must be one of: openai, anthropic, gemini, openclaw. Exiting."
