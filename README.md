@@ -14,38 +14,23 @@
 AgentArmor is a **two-layer security proxy** for LLM-powered applications. It sits between your application and any LLM provider, scanning every message and enforcing network-level egress control. Works with any tool — OpenClaw, Cursor, custom apps, raw API clients.
 
 ```text
-┌─────────────────┐
-│   Client Apps   │
-│ (Browser, IDEs, │
-│ OpenClaw, etc.) │
-└───────┬─────────┘
-        │ HTTPS / WS (Port 8443)
-        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       AgentArmor Environment                │
-│                                                             │
-│  ┌──────────────────────┐       ┌────────────────────────┐  │
-│  │ AgentArmor Proxy (L7)│       │ Web Dashboard & API    │  │
-│  │ - Prompts & Secrets  │ ◀───▶ │ - Posture Config       │  │
-│  │ - RAG / Skills       │       │ - Audit Log / Repave   │  │
-│  │ - Webhook Dispatch   │──┐    └───────────┬────────────┘  │
-│  └───────┬───────┬──────┘  │                │               │
-│          ▼       ▼         └──▶ ┌───────────▼────────────┐  │
-│  ┌────────┐  ┌───────────┐      │ Audit DB (SQLite)      │  │
-│  │ Ollama │  │ Presidio  │      └────────────────────────┘  │
-│  └────────┘  └───────────┘                                  │
-│          │                                                  │
-│  ┌───────▼───────────────────────────────────────────────┐  │
-│  │ iptables Firewall (L3/L4)                             │  │
-│  │ - Zero-Trust Egress (`firewall.yaml` allow-list)      │  │
-│  └───────┬───────────────────────────────────────────────┘  │
-└──────────┼──────────────────────────────────────────────────┘
-           │ Egress Traffic (HTTPS / WSS)
-           ▼
-┌─────────────────────────────────────┐
-│            External LLMs            │
-│   (OpenAI, Anthropic, Gemini, etc.) │
-└─────────────────────────────────────┘
+┌─────────────┐         ┌──────────────────────────────────────────────────┐        ┌───────────────┐
+│             │         │              AgentArmor Environment              │        │               │
+│ Client Apps │ HTTPS/WS│  ┌────────────────┐     ┌─────────────────────┐  │ Egress │ External LLMs │
+│ (Browser,   ├─────────┼─▶│ AgentArmor     ├────▶│ iptables Firewall   ├──┼───────▶│ (OpenAI,      │
+│ OpenClaw,   │◀────────┼─┤│ Proxy (L7)     │     │ (L3/L4)             │  │◀───────┤ Anthropic,    │
+│ IDE, etc.)  │         │  │ - Scanners     │     │ - Zero-Trust Egress │  │        │ Gemini, etc.) │
+│             │         │  │ - RAG/Skills   │     └─────────────────────┘  │        │               │
+└─────────────┘         │  └─┬──────┬─────┬─┘                              │        └───────────────┘
+                        │    │      │     │                                │
+                        │    ▼      ▼     └──▶ ┌───────────────────────┐   │
+                        │ ┌──────┐ ┌─────────┐ │  Web Dashboard & API  │   │
+                        │ │Ollama│ │Presidio │ └───────────┬───────────┘   │
+                        │ │(LLM) │ │(PII/DLP)│             ▼               │
+                        │ └──────┘ └─────────┘ ┌───────────────────────┐   │
+                        │                      │   Audit DB (SQLite)   │   │
+                        │                      └───────────────────────┘   │
+                        └──────────────────────────────────────────────────┘
 ```
 
 ## Security Posture — Assume Breach · Survive & Repave
