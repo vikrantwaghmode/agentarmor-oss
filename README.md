@@ -207,7 +207,7 @@ allowed_domains:
   - "ollama"             # sidecar — must be listed or iptables drops it
   - "presidio-analyzer"  # sidecar
 ```
-
+---
 ### Skills
 
 Five built-in personas live in `./skills/<id>/` — each has a `skill.yaml` (system prompt + keywords) and `knowledge/*.md` (RAG docs).
@@ -263,6 +263,6 @@ Open an issue first to discuss changes.
 
 See [LICENSE](LICENSE).
 
----
+
 
 <p align="center"><strong>AgentArmor</strong> — because your AI agent shouldn't have unsupervised access to the internet.</p>
