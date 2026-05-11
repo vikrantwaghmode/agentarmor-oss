@@ -85,14 +85,17 @@ AgentArmor is designed to keep running and protecting even if individual compone
 ### Repave
 > *Destroy and rebuild from known-good state rather than trying to forensically clean a compromised session.*
 
-Repave is the fastest path to a clean state. Rather than attempting to remediate a compromised agent session, AgentArmor provides controls to **instantly kill all sessions**, **rotate the GoalLock canary**, and **restore a known-good policy snapshot** — all without a full container restart.
+Repave is the fastest path to a clean state. Rather than attempting to remediate a compromised agent session, AgentArmor provides controls to **instantly kill all sessions**, **rotate the GoalLock canary**, and **restore a known-good policy snapshot** — all without a full container restart. All three operations are available from the dashboard **Repave tab (06)** and the REST API.
 
-| Operation | Time to clean state |
-|-----------|---------------------|
-| Kill all active sessions | < 1 s — single API call, closes all WebSocket connections |
-| Rotate GoalLock canary | < 1 s — new token generated, old one invalidated immediately |
-| Policy rollback | < 1 s — restore from SQLite snapshot, hot-reloads in seconds |
-| Full repave (container restart) | ~30 s — new container, new canary, clean session history |
+| Operation | Endpoint | Time to clean state |
+|-----------|----------|---------------------|
+| Kill all active sessions | `POST /armor/api/sessions/kill` | < 1 s — closes all WebSocket connections, clears session history |
+| Rotate GoalLock canary | `POST /armor/api/canary/rotate` | < 1 s — new token generated, old one invalidated immediately |
+| Policy rollback | `POST /armor/api/snapshots/restore` | < 1 s — restores SQLite snapshot, policy hot-reloads within seconds |
+| List snapshots | `GET /armor/api/snapshots` | — returns last 20 checkpoints with timestamp and label |
+| Full container repave | `docker compose restart agentarmor` | ~30 s — new canary, clean session history, fresh process |
+
+Every policy save from the dashboard auto-creates a snapshot checkpoint. No manual action required to build a restore history.
 
 ## Current Features
 
@@ -684,11 +687,11 @@ All features below are fully implemented and active out of the box.
 
 ### Assume Breach · Survive & Repave — next steps
 
-These three features implement the **Repave** pillar and are shipping next:
+These three features implement the **Repave** pillar and are fully shipped:
 
-- [x] **Session kill switch** — `POST /armor/api/sessions/kill` closes all active connections and clears session history instantly
-- [x] **GoalLock canary rotation** — `POST /armor/api/canary/rotate` issues a new canary mid-run without restarting the proxy
-- [x] **Policy snapshots & rollback** — every save checkpointed; one-click restore from the dashboard
+- [x] **Session kill switch** — `POST /armor/api/sessions/kill` closes all active connections and clears session history instantly; dashboard Repave tab (06) provides a one-click button
+- [x] **GoalLock canary rotation** — `POST /armor/api/canary/rotate` issues a new canary mid-run without restarting the proxy; old token immediately invalid
+- [x] **Policy snapshots & rollback** — every dashboard policy save auto-checkpoints to SQLite; `GET /armor/api/snapshots` lists history; Repave tab provides per-snapshot Restore buttons
 
 Planned extensions to complete the posture:
 

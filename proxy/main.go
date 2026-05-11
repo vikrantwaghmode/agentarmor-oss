@@ -199,6 +199,54 @@ var (
 	sessionHistoryLock sync.RWMutex
 )
 
+// ── Active WebSocket connection registry (for session kill switch) ──
+var (
+	activeWSConns     = make(map[string]*websocket.Conn) // sessionKey → clientConn
+	activeWSConnsLock sync.Mutex
+)
+
+func registerWSConn(key string, conn *websocket.Conn) {
+	activeWSConnsLock.Lock()
+	activeWSConns[key] = conn
+	activeWSConnsLock.Unlock()
+}
+
+func deregisterWSConn(key string) {
+	activeWSConnsLock.Lock()
+	delete(activeWSConns, key)
+	activeWSConnsLock.Unlock()
+}
+
+// killAllSessions closes every active WebSocket connection and clears session
+// history. Returns the number of sessions that were terminated.
+func killAllSessions() int {
+	activeWSConnsLock.Lock()
+	count := len(activeWSConns)
+	for key, conn := range activeWSConns {
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "Session terminated by AgentArmor admin"))
+		conn.Close()
+		delete(activeWSConns, key)
+	}
+	activeWSConnsLock.Unlock()
+
+	sessionHistoryLock.Lock()
+	sessionHistory = make(map[string]*SessionState)
+	sessionHistoryLock.Unlock()
+
+	log.Printf("🛑 Kill switch: terminated %d active session(s)", count)
+	return count
+}
+
+// rotateCanary generates a new GoalLock canary mid-run without restarting.
+// The old canary is immediately invalidated.
+func rotateCanary() string {
+	newCanary := generateCanary()
+	runtimeCanary = newCanary
+	log.Printf("🔑 GoalLock canary rotated: %s", newCanary)
+	return newCanary
+}
+
 // ──────────────────────────────────────────────
 // Rate Limiting (Token Bucket)
 // ──────────────────────────────────────────────
@@ -310,6 +358,17 @@ func initAuditDB() {
 		log.Fatal("Error creating audit_logs table:", err)
 	}
 
+	// Policy snapshots table (Repave — known-good restore points)
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS policy_snapshots (
+		"id"        INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+		"timestamp" DATETIME DEFAULT CURRENT_TIMESTAMP,
+		"label"     TEXT,
+		"yaml"      TEXT NOT NULL
+	)`)
+	if err != nil {
+		log.Fatal("Error creating policy_snapshots table:", err)
+	}
+
 	// Add new columns to existing tables for backward compatibility
 	migrateAuditDB()
 
@@ -356,6 +415,51 @@ func migrateAuditDB() {
 			log.Println("✅ Database schema migrated: added 'session_key' column.")
 		}
 	}
+}
+
+// ── Policy Snapshots (Repave — known-good restore points) ──
+
+type PolicySnapshot struct {
+	ID        int    `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Label     string `json:"label"`
+}
+
+// saveSnapshot writes the current policy.yaml to the snapshots table.
+func saveSnapshot(label string) error {
+	data, err := os.ReadFile("policy.yaml")
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO policy_snapshots (label, yaml) VALUES (?, ?)`, label, string(data))
+	return err
+}
+
+// listSnapshots returns the 20 most recent snapshot metadata rows.
+func listSnapshots() ([]PolicySnapshot, error) {
+	rows, err := db.Query(`SELECT id, timestamp, COALESCE(label,'') FROM policy_snapshots ORDER BY id DESC LIMIT 20`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PolicySnapshot
+	for rows.Next() {
+		var s PolicySnapshot
+		rows.Scan(&s.ID, &s.Timestamp, &s.Label)
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// restoreSnapshot writes snapshot yaml back to policy.yaml; the file watcher
+// picks it up and hot-reloads within seconds.
+func restoreSnapshot(id int) error {
+	var yaml string
+	err := db.QueryRow(`SELECT yaml FROM policy_snapshots WHERE id = ?`, id).Scan(&yaml)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("policy.yaml", []byte(yaml), 0644)
 }
 
 func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payloadSnippet string) {
@@ -1354,6 +1458,10 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"write failed"}`, http.StatusInternalServerError)
 			return
 		}
+		// Auto-snapshot every policy save for one-click rollback
+		if err := saveSnapshot("dashboard save"); err != nil {
+			log.Printf("⚠️  Policy snapshot failed: %v", err)
+		}
 		w.Write([]byte(`{"ok":true}`))
 
 	// GET /armor/api/audit
@@ -1457,9 +1565,64 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		log.Println("🧱 Firewall rules updated and re-applied dynamically.")
 		w.Write([]byte(`{"ok":true}`))
 
-	// GET /armor/api/skills — list all loaded skills
+	// GET /armor/api/skills
 	case endpoint == "skills" && r.Method == http.MethodGet:
 		json.NewEncoder(w).Encode(ListSkills())
+
+	// ── Assume Breach · Repave endpoints ────────────────────────────
+
+	// POST /armor/api/sessions/kill — close all WS connections + clear history
+	case endpoint == "sessions/kill" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		count := killAllSessions()
+		logAuditEvent("", "", "System", "KILL_SWITCH", fmt.Sprintf("Terminated %d session(s)", count), "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "terminated": count})
+
+	// POST /armor/api/canary/rotate — regenerate GoalLock canary mid-run
+	case endpoint == "canary/rotate" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		newCanary := rotateCanary()
+		logAuditEvent("", "", "System", "CANARY_ROTATED", "GoalLock canary rotated by admin", "")
+		// Return only a confirmation — never expose the actual canary value over the API
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "rotated": true, "prefix": newCanary[:16] + "…"})
+
+	// GET /armor/api/snapshots — list policy snapshots
+	case endpoint == "snapshots" && r.Method == http.MethodGet:
+		snaps, err := listSnapshots()
+		if err != nil {
+			http.Error(w, `{"error":"db query failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if snaps == nil {
+			snaps = []PolicySnapshot{}
+		}
+		json.NewEncoder(w).Encode(snaps)
+
+	// POST /armor/api/snapshots/restore — restore a snapshot by id
+	case strings.HasPrefix(endpoint, "snapshots/restore") && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ID int `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == 0 {
+			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+			return
+		}
+		if err := restoreSnapshot(body.ID); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		logAuditEvent("", "", "System", "POLICY_RESTORED", fmt.Sprintf("Restored snapshot id=%d", body.ID), "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "restored": body.ID})
 
 	default:
 		http.NotFound(w, r)
@@ -1561,6 +1724,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 	defer clientConn.Close()
 
 	sessionKey := getSessionKey(r)
+
+	// Register for kill-switch tracking
+	registerWSConn(sessionKey, clientConn)
+	defer deregisterWSConn(sessionKey)
 
 	log.Printf("🔌 WebSocket connected: %s", r.URL.Path)
 

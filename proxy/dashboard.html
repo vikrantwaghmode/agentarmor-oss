@@ -878,6 +878,150 @@ function CmdK({open,onClose,onNavigate}){
   );
 }
 
+/* ═══ REPAVE ═══ */
+function Repave({role}){
+  const[killing,setKilling]=useState(false);
+  const[killResult,setKillResult]=useState(null);
+  const[rotating,setRotating]=useState(false);
+  const[rotateResult,setRotateResult]=useState(null);
+  const[snapshots,setSnapshots]=useState(null);
+  const[restoring,setRestoring]=useState(null);
+  const[restoreResult,setRestoreResult]=useState(null);
+
+  useEffect(()=>{loadSnaps();},[]);
+  const loadSnaps=()=>api('snapshots').then(r=>r.json()).then(d=>setSnapshots(Array.isArray(d)?d:[])).catch(()=>setSnapshots([]));
+
+  const killSessions=async()=>{
+    setKilling(true);setKillResult(null);
+    try{const r=await api('sessions/kill',{method:'POST'});const d=await r.json();setKillResult(d);}
+    catch(e){setKillResult({error:String(e)});}
+    setKilling(false);
+  };
+
+  const rotateCanary=async()=>{
+    setRotating(true);setRotateResult(null);
+    try{const r=await api('canary/rotate',{method:'POST'});const d=await r.json();setRotateResult(d);}
+    catch(e){setRotateResult({error:String(e)});}
+    setRotating(false);
+  };
+
+  const restoreSnap=async(id)=>{
+    setRestoring(id);setRestoreResult(null);
+    try{const r=await api('snapshots/restore',{method:'POST',body:JSON.stringify({id})});const d=await r.json();setRestoreResult(d);await loadSnaps();}
+    catch(e){setRestoreResult({error:String(e)});}
+    setRestoring(null);
+  };
+
+  const isAdmin=role==='admin';
+
+  const ActionCard=({title,sub,desc,btnLabel,onClick,loading,result,danger})=>(
+    <div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',padding:20,background:'var(--s1)',marginBottom:12}}>
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:16}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:600,color:'var(--t1)',marginBottom:3}}>{title}</div>
+          <div style={{fontSize:10,letterSpacing:'.06em',textTransform:'uppercase',color:'var(--t3)',marginBottom:8}}>{sub}</div>
+          <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.6}}>{desc}</div>
+          {result&&(
+            <div style={{marginTop:10,padding:'6px 10px',borderRadius:'var(--r)',fontSize:11,
+              background:result.error?'var(--red-d)':'var(--green-d)',
+              border:`1px solid ${result.error?'rgba(239,68,68,.3)':'rgba(34,197,94,.25)'}`,
+              color:result.error?'var(--red)':'var(--green)'}}>
+              {result.error
+                ?'⚠ '+result.error
+                :result.terminated!=null?`✓ Terminated ${result.terminated} session(s) · history cleared`
+                :result.rotated?`✓ Canary rotated · prefix: ${result.prefix}`
+                :result.restored!=null?`✓ Snapshot #${result.restored} restored · policy hot-reloading`
+                :'✓ Done'}
+            </div>
+          )}
+        </div>
+        {isAdmin?(
+          <button onClick={onClick} disabled={loading}
+            style={{padding:'8px 18px',borderRadius:'var(--r)',border:`1px solid ${danger?'var(--red)':'var(--b3)'}`,
+              background:danger?'var(--red-d)':'var(--s2)',color:danger?'var(--red)':'var(--t2)',
+              fontSize:12,fontWeight:600,whiteSpace:'nowrap',cursor:loading?'default':'pointer',opacity:loading?.6:1,transition:'all .15s',flexShrink:0}}>
+            {loading?'Working…':btnLabel}
+          </button>
+        ):(
+          <span style={{fontSize:10,color:'var(--t3)',padding:'4px 8px',border:'1px solid var(--b2)',borderRadius:3}}>Admin only</span>
+        )}
+      </div>
+    </div>
+  );
+
+  return(
+    <div>
+      <div style={{padding:'24px 24px 0'}}>
+        <div className="page-label"><span className="page-label-dot"/><span>Repave</span><span>·</span><span>Assume Breach · Survive &amp; Repave</span></div>
+        <h1 className="page-headline" style={{marginBottom:8}}>Clean state in <span className="accent">under a second</span>.</h1>
+        <p style={{fontSize:12,color:'var(--t3)',marginBottom:28,maxWidth:560,lineHeight:1.7}}>
+          Repave assumes that remediation is slower and riskier than rebuilding from a known-good state.
+          These three controls let you destroy compromised session state, invalidate captured canary tokens,
+          and restore a verified policy — without restarting the container.
+        </p>
+      </div>
+      <div style={{padding:'0 24px'}}>
+        <div className="section-hdr"><span className="sec-title">Session Kill Switch</span><span className="sec-meta">Survive — instant session wipe</span></div>
+        <ActionCard
+          title="Kill All Active Sessions"
+          sub="POST /armor/api/sessions/kill"
+          desc="Closes every live WebSocket connection with a controlled shutdown frame and clears all in-memory session history. Agents currently in-flight receive a close frame and must reconnect. Equivalent to a hard session wipe without a container restart."
+          btnLabel="Kill All Sessions"
+          onClick={killSessions} loading={killing} result={killResult} danger={true}
+        />
+
+        <div className="section-hdr" style={{marginTop:20}}><span className="sec-title">GoalLock Canary Rotation</span><span className="sec-meta">Assume Breach — invalidate captured anchors</span></div>
+        <ActionCard
+          title="Rotate Runtime Canary"
+          sub="POST /armor/api/canary/rotate"
+          desc="Generates a new ARMOR-CANARY token mid-run. The old canary is immediately invalidated — any attacker who captured it can no longer use it to bypass exfiltration detection. The new token is injected into the next system prompt automatically. No restart required."
+          btnLabel="Rotate Canary"
+          onClick={rotateCanary} loading={rotating} result={rotateResult} danger={false}
+        />
+
+        <div className="section-hdr" style={{marginTop:20}}><span className="sec-title">Policy Snapshots</span><span className="sec-meta">Repave — restore known-good policy</span></div>
+        <p style={{fontSize:11,color:'var(--t3)',marginBottom:12,lineHeight:1.6}}>
+          Every policy save is automatically checkpointed. Restore any snapshot to roll back to a known-good state — the file watcher picks up the change within seconds.
+        </p>
+        {!snapshots?<div className="empty loading">Loading snapshots…</div>
+        :!snapshots.length?<div style={{fontSize:11,color:'var(--t3)',padding:'16px 0'}}>No snapshots yet — save the policy from the Policy tab to create the first checkpoint.</div>
+        :(
+          <div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden'}}>
+            <div style={{display:'grid',gridTemplateColumns:'40px 1fr 140px 120px',padding:'7px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)'}}>
+              {['#','Timestamp','Label',''].map(h=><span key={h} style={{fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)'}}>{h}</span>)}
+            </div>
+            {snapshots.map(s=>(
+              <div key={s.id} style={{display:'grid',gridTemplateColumns:'40px 1fr 140px 120px',alignItems:'center',padding:'8px 12px',borderBottom:'1px solid var(--b1)',transition:'background .1s'}}
+                onMouseEnter={e=>e.currentTarget.style.background='var(--s2)'}
+                onMouseLeave={e=>e.currentTarget.style.background=''}>
+                <span style={{fontSize:11,color:'var(--t3)'}}>{s.id}</span>
+                <span style={{fontSize:11,color:'var(--t2)'}}>{s.timestamp}</span>
+                <span style={{fontSize:10,color:'var(--t3)'}}>{s.label||'—'}</span>
+                {isAdmin?(
+                  <button onClick={()=>restoreSnap(s.id)} disabled={restoring===s.id}
+                    style={{padding:'3px 10px',border:'1px solid var(--b2)',borderRadius:'var(--r)',fontSize:11,color:'var(--t2)',background:'var(--s2)',cursor:'pointer',transition:'all .15s'}}
+                    onMouseEnter={e=>{e.target.style.borderColor='var(--purple)';e.target.style.color='var(--purple)';}}
+                    onMouseLeave={e=>{e.target.style.borderColor='var(--b2)';e.target.style.color='var(--t2)';}}>
+                    {restoring===s.id?'Restoring…':'Restore →'}
+                  </button>
+                ):<span/>}
+              </div>
+            ))}
+          </div>
+        )}
+        {restoreResult&&(
+          <div style={{marginTop:10,padding:'7px 12px',borderRadius:'var(--r)',fontSize:11,
+            background:restoreResult.error?'var(--red-d)':'var(--green-d)',
+            color:restoreResult.error?'var(--red)':'var(--green)',
+            border:`1px solid ${restoreResult.error?'rgba(239,68,68,.3)':'rgba(34,197,94,.25)'}`}}>
+            {restoreResult.error?'⚠ '+restoreResult.error:`✓ Snapshot #${restoreResult.restored} restored — policy hot-reloading now`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ═══ AUTH ═══ */
 function Auth({onAuth}){
   const[val,setVal]=useState('');const[err,setErr]=useState('');
@@ -938,6 +1082,7 @@ function App(){
     {id:'audit',    num:'03',label:'Audit Log',count:audit.length},
     {id:'firewall', num:'04',label:'Firewall', count:fw?.allowed_domains?.length},
     {id:'skills',   num:'05',label:'Skills',   count:skills?.length},
+    {id:'repave',   num:'06',label:'Repave'},
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -999,6 +1144,7 @@ function App(){
         {tab==='audit'    &&<Audit    events={audit} onRefresh={loadAudit} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} refreshMs={refreshMs} setRefreshMs={setRefreshMs}/>}
         {tab==='firewall' &&<Firewall fw={fw} audit={audit}/>}
         {tab==='skills'   &&<Skills   skills={skills}/>}
+        {tab==='repave'   &&<Repave   role={role}/>}
       </main>
 
       {/* CmdK — exact AgentArmor.html */}
