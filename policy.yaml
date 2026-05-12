@@ -63,37 +63,34 @@ scanners:
     secrets:
         enabled: true
         redact_patterns:
-            # strategy: replace (default) | hash | mask | remove
-            # replacement: custom label when strategy=replace (default: [REDACTED])
-            # mask_prefix / mask_suffix: chars to expose when strategy=mask
             - rule: (?i)(sk-[a-zA-Z0-9]{20,})
               enabled: true
               strategy: mask
-              mask_prefix: 7    # shows "sk-proj" or "sk-live"
+              mask_prefix: 7
               mask_suffix: 4
             - rule: (?i)(sk-ant-[a-zA-Z0-9-]{20,})
               enabled: true
               strategy: mask
-              mask_prefix: 6    # shows "sk-ant"
+              mask_prefix: 6
               mask_suffix: 4
             - rule: AIza[0-9A-Za-z\-_]{35}
               enabled: true
               strategy: replace
-              replacement: "[REDACTED_GOOGLE_KEY]"
+              replacement: '[REDACTED_GOOGLE_KEY]'
             - rule: ghp_[0-9a-zA-Z]{36}
               enabled: true
-              strategy: hash    # SHA-256 short hash — allows correlation without exposure
+              strategy: hash
             - rule: xox[pboa]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-z0-9]{32}
               enabled: true
               strategy: replace
-              replacement: "[REDACTED_SLACK_TOKEN]"
+              replacement: '[REDACTED_SLACK_TOKEN]'
             - rule: ey[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*
               enabled: true
               strategy: replace
-              replacement: "[REDACTED_JWT]"
+              replacement: '[REDACTED_JWT]'
             - rule: '-----BEGIN[ A-Z0-9]+PRIVATE KEY-----'
               enabled: true
-              strategy: remove  # strip entirely — no placeholder left behind
+              strategy: remove
     pii:
         enabled: true
         block_patterns:
@@ -107,7 +104,7 @@ scanners:
               enabled: true
         advanced_pii:
             enabled: true
-            url: http://presidio-analyzer:5000/analyze
+            url: http://presidio-analyzer:3000/analyze
             confidence_threshold: 0.75
     malicious_content:
         enabled: true
@@ -177,21 +174,13 @@ scanners:
         max_tool_calls_per_session: 100
         max_blocks_per_session: 10
         max_high_risk_calls_per_session: 5
-
 webhooks: []
-
 threat_feeds:
     enabled: false
     feeds: []
-
-# Semantic RAG — vector embeddings for skill knowledge retrieval + automatic routing.
-# Requires Ollama with the embedding model:
-#   docker exec ollama ollama pull nomic-embed-text
 skills_rag:
-    enabled: false
-    url: "http://ollama:11434"
-    model: "nomic-embed-text"
-    # Auto-route: embed each incoming message and activate the closest-matching skill
-    # automatically — no header or keyword match needed.
+    enabled: true
+    url: http://ollama:11434
+    model: nomic-embed-text
     auto_route: true
-    auto_route_threshold: 0.70  # raise to reduce false positives, lower for more coverage
+    auto_route_threshold: 0.7

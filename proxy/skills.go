@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -134,19 +135,26 @@ func initSkills() {
 		}
 	}
 	log.Printf("✅ %d skill(s) ready", loaded)
-
-	// Start semantic embedding in background if configured.
-	policyLock.RLock()
-	ragCfg := policy.SkillsRAG
-	policyLock.RUnlock()
-	if ragCfg.Enabled && ragCfg.URL != "" && ragCfg.Model != "" {
-		go embedAllDocs(ragCfg.URL, ragCfg.Model)
-	}
 }
 
 // ──────────────────────────────────────────────
 // Semantic RAG — Ollama Embeddings
 // ──────────────────────────────────────────────
+
+var embeddingInProgress atomic.Bool
+
+// TriggerEmbeddingsIfNeeded starts the background Ollama embedding process
+// if Semantic RAG is enabled and docs haven't been embedded yet.
+func TriggerEmbeddingsIfNeeded(baseURL, model string) {
+	if EmbeddedDocCount() > 0 || embeddingInProgress.Load() {
+		return
+	}
+	embeddingInProgress.Store(true)
+	go func() {
+		defer embeddingInProgress.Store(false)
+		embedAllDocs(baseURL, model)
+	}()
+}
 
 // embedAllDocs runs in a background goroutine after skills load.
 // Embeds every knowledge doc using Ollama; docs without embeddings
@@ -154,7 +162,10 @@ func initSkills() {
 func embedAllDocs(baseURL, model string) {
 	skillsMu.Lock()
 	// Collect all docs that need embedding
-	type target struct{ skill *LoadedSkill; idx int }
+	type target struct {
+		skill *LoadedSkill
+		idx   int
+	}
 	var targets []target
 	for _, skill := range loadedSkills {
 		for i := range skill.Docs {
@@ -206,6 +217,12 @@ func generateEmbedding(text, baseURL, model string) ([]float64, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
 	var result struct {
 		Embedding []float64 `json:"embedding"`
 	}
@@ -382,7 +399,7 @@ func DetectSkill(header, content string) string {
 			best = match{id, score}
 		}
 	}
-	if best.score >= 2 {
+	if best.score >= 1 {
 		return best.id
 	}
 
@@ -424,7 +441,7 @@ func syncSkillsToOpenClaw() {
 		return // not running in OpenClaw mode
 	}
 
-	codexBase  := "/data/.openclaw/agents/main/agent/codex-home/skills"
+	codexBase := "/data/.openclaw/agents/main/agent/codex-home/skills"
 	pluginBase := "/data/.openclaw/plugin-skills"
 	os.MkdirAll(codexBase, 0755)
 	os.MkdirAll(pluginBase, 0755)

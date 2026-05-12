@@ -30,9 +30,9 @@ services:
   presidio-analyzer:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
-      - "5000:5000"
+      - "3000:3000"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
       interval: 10s
       timeout: 5s
       retries: 12          # up to 2 min for NLP model load

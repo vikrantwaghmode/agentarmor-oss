@@ -90,7 +90,7 @@ scanners:
               enabled: true
         advanced_pii:
             enabled: true
-            url: http://presidio-analyzer:5000/analyze
+            url: http://presidio-analyzer:3000/analyze
             confidence_threshold: 0.75
     malicious_content:
         enabled: true

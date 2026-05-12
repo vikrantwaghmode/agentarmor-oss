@@ -59,6 +59,12 @@ func main() {
 	run("iptables", "-A", "AI_EGRESS", "-p", "udp", "--dport", "53", "-j", "ACCEPT")
 	run("iptables", "-A", "AI_EGRESS", "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
 
+	// 3. ALLOW: Docker Internal Networks for Sidecars
+	// Ensures Ollama and Presidio are always reachable regardless of container startup order
+	// (Layer 7 proxy still actively blocks SSRF to these subnets from user input)
+	run("iptables", "-A", "AI_EGRESS", "-d", "172.16.0.0/12", "-j", "ACCEPT")
+	run("iptables", "-A", "AI_EGRESS", "-d", "192.168.0.0/16", "-j", "ACCEPT")
+
 	// 4. Resolve and Allow external domains from firewall.yaml
 	for _, domain := range config.AllowedDomains {
 		ips, err := net.LookupIP(domain)

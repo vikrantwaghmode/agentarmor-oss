@@ -1332,6 +1332,11 @@ func loadPolicy() {
 	globalRuleCounts = currentRuleCounts // Store the calculated counts
 	policyLock.Unlock()
 
+	// If Semantic RAG was just enabled, automatically trigger document embedding
+	if newPolicy.SkillsRAG.Enabled && newPolicy.SkillsRAG.URL != "" && newPolicy.SkillsRAG.Model != "" {
+		TriggerEmbeddingsIfNeeded(newPolicy.SkillsRAG.URL, newPolicy.SkillsRAG.Model)
+	}
+
 	log.Println("✅ Policy loaded and applied successfully!")
 }
 
@@ -1471,7 +1476,8 @@ func injectSystemContext(payload, skillHeader string) string {
 
 	// Extract user query for RAG retrieval.
 	userQuery := ""
-	for _, m := range msgs {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
 		if msg, ok := m.(map[string]interface{}); ok {
 			if msg["role"] == "user" {
 				if c, ok := msg["content"].(string); ok {
@@ -1797,6 +1803,12 @@ func scanWithLLM(content, baseURL, model string, threshold float64, timeoutMs in
 		return false, ""
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("⚠️  LLM scanner returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return false, ""
+	}
 
 	var ollamaResp ollamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
@@ -2367,7 +2379,16 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 
 	// GET /armor/api/skills
 	case endpoint == "skills" && r.Method == http.MethodGet:
-		json.NewEncoder(w).Encode(ListSkills())
+		policyLock.RLock()
+		ragEnabled := policy.SkillsRAG.Enabled
+		ragAutoRoute := policy.SkillsRAG.AutoRoute
+		policyLock.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"rag_enabled":           ragEnabled,
+			"rag_auto_route":        ragAutoRoute,
+			"embedding_in_progress": embeddingInProgress.Load(),
+			"skills":                ListSkills(),
+		})
 
 	// POST /armor/api/skills/toggle — admin enables/disables a skill globally
 	case endpoint == "skills/toggle" && r.Method == http.MethodPost:

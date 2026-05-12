@@ -214,7 +214,7 @@ Admin can activate skills globally from the **Skills tab (05)** in the dashboard
 | Service | Purpose | Setup |
 |---------|---------|-------|
 | `ollama` | LLM scanner + semantic RAG | `docker exec ollama ollama pull llama3.2:1b` (scanner) + `nomic-embed-text` (RAG) |
-| `presidio-analyzer` | Confidence-gated PII | Enable `pii.advanced_pii.enabled: true` after confirming `curl http://localhost:5000/health` |
+| `presidio-analyzer` | Confidence-gated PII | Enable `pii.advanced_pii.enabled: true` after confirming `curl http://localhost:3000/health` |
 
 Both fail gracefully — proxy falls back to regex scanners if unreachable.
 

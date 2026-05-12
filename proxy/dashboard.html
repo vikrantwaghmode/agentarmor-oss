@@ -559,7 +559,7 @@ function Health({data,recentBlocks}){
 function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
     addWebhook,removeWebhook,setWebhookField,toggleWebhookEvent,
     addFeed,removeFeed,setFeedField,testWebhook,testingIdx,testResults}){
-  const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false,webhooks:false,feeds:false});
+  const[open,setOpen]=useState({auto_repave:true,anomaly:false,zero_trust:false,blast:false,webhooks:false,feeds:false,skills_rag:false,presidio:false});
   const[newTool,setNewTool]=useState('');
   const sc=pol?.scanners;
   if(!sc)return null;
@@ -689,6 +689,22 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         </CfgRow>
         <CfgRow label="Max high-risk calls / session" sub="Kill session after this many calls to zero-trust tools">
           <NumInput path={['blast_radius','max_high_risk_calls_per_session']} value={sc.blast_radius?.max_high_risk_calls_per_session} min={1}/>
+        </CfgRow>
+      </Block>
+
+      {/* Advanced PII (Presidio) */}
+      <Block id="presidio" name="Advanced PII (Presidio)" slug="/pii/advanced_pii">
+        <CfgRow label="Enabled" sub="Use NLP to detect names, addresses, and freeform PII">
+          <Toggle path={['pii','advanced_pii','enabled']} checked={!!sc.pii?.advanced_pii?.enabled}/>
+        </CfgRow>
+        <CfgRow label="Presidio URL" sub="Endpoint for the Presidio Analyzer sidecar">
+          {isAdmin
+            ?<input value={sc.pii?.advanced_pii?.url||''} onChange={e=>setField(['pii','advanced_pii','url'],e.target.value)}
+                style={{width:240,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val">{sc.pii?.advanced_pii?.url}</span>}
+        </CfgRow>
+        <CfgRow label="Confidence Threshold" sub="Minimum confidence score required to block the request">
+          <NumInput path={['pii','advanced_pii','confidence_threshold']} value={sc.pii?.advanced_pii?.confidence_threshold} min={0} max={1} step={0.05}/>
         </CfgRow>
       </Block>
 
@@ -826,6 +842,31 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
           </div>
         ))}
         {isAdmin&&<button onClick={addFeed} className="tag-add-btn" style={{width:'100%',padding:'7px',textAlign:'center'}}>+ Add intelligence feed</button>}
+      </Block>
+
+      {/* Skills RAG & Routing */}
+      <Block id="skills_rag" name="Skills RAG & Routing" slug="/skills_rag">
+        <CfgRow label="Semantic RAG Enabled" sub="When disabled, proxy instantly falls back to BM25 keyword retrieval.">
+          <Toggle path={['skills_rag','enabled']} checked={!!pol?.skills_rag?.enabled} top/>
+        </CfgRow>
+        <CfgRow label="Ollama URL" sub="Endpoint for the embedding model">
+          {isAdmin
+            ?<input value={pol?.skills_rag?.url||''} onChange={e=>setTopField(['skills_rag','url'],e.target.value)}
+                style={{width:240,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val">{pol?.skills_rag?.url}</span>}
+        </CfgRow>
+        <CfgRow label="Embedding Model" sub="Model used for semantic similarity (e.g. nomic-embed-text)">
+          {isAdmin
+            ?<input value={pol?.skills_rag?.model||''} onChange={e=>setTopField(['skills_rag','model'],e.target.value)}
+                style={{width:240,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val">{pol?.skills_rag?.model}</span>}
+        </CfgRow>
+        <CfgRow label="Auto-Route" sub="Automatically route messages to the best-matching skill based on semantic similarity">
+          <Toggle path={['skills_rag','auto_route']} checked={!!pol?.skills_rag?.auto_route} top/>
+        </CfgRow>
+        <CfgRow label="Auto-Route Threshold" sub="Cosine similarity required to trigger auto-routing">
+          <NumInput path={['skills_rag','auto_route_threshold']} value={pol?.skills_rag?.auto_route_threshold} min={0} max={1} step={0.05} top/>
+        </CfgRow>
       </Block>
     </div>
   );
@@ -1277,9 +1318,10 @@ function Firewall({fw,audit}){
 
 /* ═══ SKILLS ═══ */
 const ICONS={'security-engineer':'🔐','security-auditor':'📋','software-developer':'💻','software-qa':'✅','cloud-engineer':'☁️'};
-function Skills({skills,role,onSkillsChange}){
+function Skills({data,role,onSkillsChange}){
   const[toggling,setToggling]=useState(null);
-  if(!skills)return<div className="empty loading">Loading skills…</div>;
+  if(!data)return<div className="empty loading">Loading skills…</div>;
+  const skills=data.skills||[];
   if(!skills.length)return<div className="empty">No skills loaded. Add directories under <code style={{color:'var(--purple)'}}>./skills/</code> and restart.</div>;
 
   const activeCount=skills.filter(s=>s.active).length;
@@ -1301,16 +1343,18 @@ function Skills({skills,role,onSkillsChange}){
         Clients can still override with <code>X-AgentArmor-Skill: &lt;id&gt;</code> or let keyword auto-detection pick one.
       </p>
       {/* Semantic RAG status banner */}
-      {skills.some(s=>s.embedded_docs>0)
+      {data.rag_enabled
         ?<div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'8px 12px',border:'1px solid rgba(167,139,250,.3)',borderRadius:'var(--r)',background:'var(--purple-d)',marginBottom:16,fontSize:11}}>
             <span style={{color:'var(--purple)',fontWeight:700}}>⬡ Semantic RAG active</span>
             <span style={{color:'var(--muted)'}}>·</span>
-            <span style={{color:'var(--t3)'}}>{skills.reduce((a,s)=>a+s.embedded_docs,0)}/{skills.reduce((a,s)=>a+s.docs,0)} docs embedded</span>
+            <span style={{color:'var(--t3)'}}>{skills.reduce((a,s)=>a+s.embedded_docs,0)}/{skills.reduce((a,s)=>a+s.docs,0)} docs embedded {data.embedding_in_progress&&<span style={{color:'var(--purple)'}}>(embedding…)</span>}</span>
             <span style={{color:'var(--muted)'}}>·</span>
             <span style={{color:'var(--t3)'}}>cosine similarity retrieval</span>
             <span style={{color:'var(--muted)'}}>·</span>
-            <span style={{color:'var(--green)',fontWeight:600}}>⟳ auto-routing on</span>
-            <span style={{color:'var(--t3)',marginLeft:4}}>messages automatically matched to the closest skill</span>
+            {data.rag_auto_route
+              ?<><span style={{color:'var(--green)',fontWeight:600}}>⟳ auto-routing on</span><span style={{color:'var(--t3)',marginLeft:4}}>messages automatically matched to the closest skill</span></>
+              :<span style={{color:'var(--t3)',fontWeight:600}}>auto-routing off</span>
+            }
           </div>
         :<div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'7px 12px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'var(--s2)',marginBottom:16,fontSize:11,color:'var(--t3)'}}>
             <span>⬡ BM25 keyword retrieval · auto-routing off</span>
@@ -1678,7 +1722,7 @@ function App(){
   const[stats,setStats]=useState(null);
   const[audit,setAudit]=useState([]);
   const[fw,setFw]=useState(null);
-  const[skills,setSkills]=useState(null);
+  const[skillsData,setSkillsData]=useState(null);
 
   useEffect(()=>{const h=e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();setCmdkOpen(o=>!o);}};window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);},[]);
   useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),4000);return()=>clearInterval(t);},[]);
@@ -1686,9 +1730,9 @@ function App(){
   const loadStats =useCallback(()=>api('stats').then(r=>r.json()).then(setStats).catch(()=>{}),[]);
   const loadAudit =useCallback(()=>api('audit?limit=200').then(r=>r.json()).then(d=>setAudit(Array.isArray(d)?d:[])).catch(()=>{}),[]);
   const loadFw    =useCallback(()=>api('firewall').then(r=>r.json()).then(setFw).catch(()=>{}),[]);
-  const loadSkills=useCallback(()=>api('skills').then(r=>r.json()).then(d=>setSkills(Array.isArray(d)?d:[])).catch(()=>setSkills([])),[]);
+  const loadSkills=useCallback(()=>api('skills').then(r=>r.json()).then(setSkillsData).catch(()=>setSkillsData(null)),[]);
 
-  useEffect(()=>{if(!role)return;loadStats();loadAudit();loadFw();loadSkills();const t=setInterval(loadStats,12000);return()=>clearInterval(t);},[role]);
+  useEffect(()=>{if(!role)return;loadStats();loadAudit();loadFw();loadSkills();const t=setInterval(()=>{loadStats();loadSkills();},12000);return()=>clearInterval(t);},[role,loadStats,loadAudit,loadFw,loadSkills]);
   useEffect(()=>{if(!role||!autoRefresh)return;const t=setInterval(()=>{loadAudit();loadStats();},refreshMs);return()=>clearInterval(t);},[role,autoRefresh,refreshMs,loadAudit,loadStats]);
 
   const recentBlocks=useMemo(()=>audit.filter(e=>e.action!=='ALLOWED').slice(0,12),[audit]);
@@ -1703,7 +1747,7 @@ function App(){
     {id:'policy',   num:'02',label:'Policy',  count:ruleCount},
     {id:'audit',    num:'03',label:'Audit Log',count:audit.length},
     {id:'firewall', num:'04',label:'Firewall', count:fw?.allowed_domains?.length},
-    {id:'skills',   num:'05',label:'Skills',   count:skills?.length},
+    {id:'skills',   num:'05',label:'Skills',   count:skillsData?.skills?.length},
     {id:'repave',   num:'06',label:'Repave'},
   ];
 
@@ -1765,7 +1809,7 @@ function App(){
         {tab==='policy'   &&<Policy   role={role}/>}
         {tab==='audit'    &&<Audit    events={audit} onRefresh={loadAudit} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} refreshMs={refreshMs} setRefreshMs={setRefreshMs}/>}
         {tab==='firewall' &&<Firewall fw={fw} audit={audit}/>}
-        {tab==='skills'   &&<Skills   skills={skills} role={role} onSkillsChange={loadSkills}/>}
+        {tab==='skills'   &&<Skills   data={skillsData} role={role} onSkillsChange={loadSkills}/>}
         {tab==='repave'   &&<Repave   role={role}/>}
       </main>
 
