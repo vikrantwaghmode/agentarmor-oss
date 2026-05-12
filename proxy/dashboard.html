@@ -1411,6 +1411,8 @@ function CmdK({open,onClose,onNavigate}){
       {icon:'☰',label:'Audit Log',sub:'03',fn:()=>nav('audit')},
       {icon:'⊞',label:'Firewall',sub:'04',fn:()=>nav('firewall')},
       {icon:'🎓',label:'Skills',sub:'05',fn:()=>nav('skills')},
+      {icon:'↻',label:'Repave',sub:'06',fn:()=>nav('repave')},
+      {icon:'📄',label:'Logs',sub:'07',fn:()=>nav('logs')},
     ]},
   ];
   const ql=q.toLowerCase();
@@ -1688,6 +1690,65 @@ function Repave({role}){
   );
 }
 
+/* ═══ LOGS ═══ */
+function Logs({role}){
+  const[logs,setLogs]=useState([]);
+  const[autoRefresh,setAutoRefresh]=useState(true);
+  const[filter,setFilter]=useState('ALL');
+  const endRef=useRef(null);
+
+  const load=useCallback(()=>api('logs').then(r=>r.json()).then(d=>setLogs(Array.isArray(d)?d:[])).catch(()=>{}),[]);
+  useEffect(()=>{load();const t=setInterval(()=>{if(autoRefresh)load();},2000);return()=>clearInterval(t);},[autoRefresh,load]);
+  useEffect(()=>{if(autoRefresh&&endRef.current)endRef.current.scrollIntoView();},[logs,autoRefresh]);
+
+  const filteredLogs=useMemo(()=>{
+    if(filter==='ALL')return logs;
+    return logs.filter(l=>{
+      const lower=l.toLowerCase();
+      const isErr=l.includes('❌')||l.includes('🔥')||lower.includes('error')||lower.includes('failed')||lower.includes('fatal');
+      const isWarn=l.includes('⚠️')||l.includes('🛑')||l.includes('🚨')||lower.includes('warning');
+      if(filter==='ERROR')return isErr;
+      if(filter==='WARN')return isWarn&&!isErr;
+      if(filter==='PASS')return !isErr&&!isWarn;
+      return true;
+    });
+  },[logs,filter]);
+
+  const getStyle=l=>{
+    const lower=l.toLowerCase();
+    const isErr=l.includes('❌')||l.includes('🔥')||lower.includes('error')||lower.includes('failed')||lower.includes('fatal');
+    const isWarn=l.includes('⚠️')||l.includes('🛑')||l.includes('🚨')||lower.includes('warning');
+    if(isErr)return{color:'var(--red)'};
+    if(isWarn)return{color:'var(--yellow)'};
+    return{color:'var(--green)'};
+  };
+
+  return(
+    <div>
+      <div style={{padding:'24px 24px 0'}}>
+        <div className="page-label"><span className="page-label-dot"/><span>Logs</span><span>·</span><span>System &amp; Startup</span></div>
+        <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:20}}>
+          <h1 className="page-headline">Real-time <span className="accent">internal logs</span>.</h1>
+          <div style={{display:'flex',gap:6}}>
+            <div className="filter-grp" style={{marginRight:8}}>
+              {['ALL','PASS','WARN','ERROR'].map(ff=><button key={ff} className={`filter-btn ${filter===ff?'on':''}`} onClick={()=>setFilter(ff)}>{ff}</button>)}
+            </div>
+            <button className="pause-btn" onClick={load}>↻ Refresh</button>
+            <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
+          </div>
+        </div>
+      </div>
+      <div style={{padding:'0 24px 24px'}}>
+        <div style={{background:'var(--s1)',border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:'14px',fontFamily:'var(--mono)',fontSize:11,color:'var(--t2)',height:'calc(100vh - 240px)',overflowY:'auto'}}>
+          {!filteredLogs.length&&<div className="empty">No logs match the current filter.</div>}
+          {filteredLogs.map((l,i)=><div key={i} style={{whiteSpace:'pre-wrap',marginBottom:4,lineHeight:1.5,...getStyle(l)}}>{l}</div>)}
+          <div ref={endRef}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══ AUTH ═══ */
 function Auth({onAuth}){
   const[val,setVal]=useState('');const[err,setErr]=useState('');
@@ -1749,6 +1810,7 @@ function App(){
     {id:'firewall', num:'04',label:'Firewall', count:fw?.allowed_domains?.length},
     {id:'skills',   num:'05',label:'Skills',   count:skillsData?.skills?.length},
     {id:'repave',   num:'06',label:'Repave'},
+    {id:'logs',     num:'07',label:'Logs'},
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -1811,6 +1873,7 @@ function App(){
         {tab==='firewall' &&<Firewall fw={fw} audit={audit}/>}
         {tab==='skills'   &&<Skills   data={skillsData} role={role} onSkillsChange={loadSkills}/>}
         {tab==='repave'   &&<Repave   role={role}/>}
+        {tab==='logs'     &&<Logs     role={role}/>}
       </main>
 
       {/* CmdK — exact AgentArmor.html */}

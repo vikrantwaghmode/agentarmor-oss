@@ -37,6 +37,33 @@ import (
 var dashboardHTML []byte
 
 // ──────────────────────────────────────────────
+// Log Capturer
+// ──────────────────────────────────────────────
+
+var (
+	appLogs     []string
+	appLogsLock sync.Mutex
+)
+
+type logCapturer struct {
+	out io.Writer
+}
+
+func (l *logCapturer) Write(p []byte) (n int, err error) {
+	appLogsLock.Lock()
+	appLogs = append(appLogs, string(p))
+	if len(appLogs) > 1000 {
+		appLogs = appLogs[len(appLogs)-1000:]
+	}
+	appLogsLock.Unlock()
+	return l.out.Write(p)
+}
+
+func init() {
+	log.SetOutput(&logCapturer{out: os.Stdout})
+}
+
+// ──────────────────────────────────────────────
 // Policy Config
 // ──────────────────────────────────────────────
 
@@ -2604,6 +2631,16 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		logAuditEvent("", "", "System", "POLICY_RESTORED", fmt.Sprintf("Restored snapshot id=%d", body.ID), "")
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "restored": body.ID})
+
+	// GET /armor/api/logs — retrieve in-memory system logs
+	case endpoint == "logs" && r.Method == http.MethodGet:
+		appLogsLock.Lock()
+		out := append([]string{}, appLogs...)
+		appLogsLock.Unlock()
+		if out == nil {
+			out = []string{}
+		}
+		json.NewEncoder(w).Encode(out)
 
 	default:
 		http.NotFound(w, r)
