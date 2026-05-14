@@ -3,7 +3,7 @@
 </p>
 <p align="center">
   <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
-  <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go" alt="Go">
+  <img src="https://img.shields.io/badge/go-1.25-00ADD8?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker" alt="Docker">
   <img src="https://img.shields.io/badge/layer_7-proxy-8B5CF6?style=flat-square" alt="L7">
   <img src="https://img.shields.io/badge/layer_3/4-firewall-EF4444?style=flat-square" alt="L3/4">
@@ -73,7 +73,8 @@ AgentArmor is built around three principles:
 | Custom Redaction | — | Config | Per-rule strategies: replace with label, SHA-256 hash, mask prefix/suffix, or remove entirely |
 | Multi-turn Scanning | In | All | All non-system messages scanned, not just the first — covers full conversation history |
 | TLS by Default | — | Transport | Auto-generated self-signed cert on first run; HTTPS on `:8443`, HTTP→HTTPS redirect on `:8080` |
-| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC, all posture config editable |
+| SSO / OIDC | — | Auth | Any OIDC provider (Google, Microsoft, Okta, Auth0, Keycloak); role mapping from groups; configurable from the Auth tab |
+| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC, Auth tab for SSO config, all posture settings editable |
 
 ## Quick Start
 
@@ -96,6 +97,13 @@ USER_TOKEN="..."                # read-only dashboard
 LLM_PROVIDER="openclaw"        # openclaw | openai | anthropic | gemini
 GEMINI_API_KEY="AIza..."
 OPENCLAW_GATEWAY_TOKEN="..."
+
+# SSO — or configure live from the Auth tab (07) in the dashboard
+# OIDC_ENABLED=true
+# OIDC_ISSUER=https://accounts.google.com
+# OIDC_CLIENT_ID=...  OIDC_CLIENT_SECRET=...
+# OIDC_REDIRECT_URL=https://your-host:8443/armor/callback
+# OIDC_ADMIN_GROUPS=security-admins  OIDC_USER_GROUPS=employees
 
 # TLS — defaults to auto-generated self-signed cert
 # TLS_CERT="/certs/server.crt"   # path inside container
@@ -286,7 +294,7 @@ agentarmor-oss/
 | Graceful config validation | ✅ | Invalid regex skipped with warning; bad YAML keeps previous policy active |
 | Multi-turn conversation scanning | ✅ | All non-system messages scanned, not just the first |
 | IP-level rate limiting | ✅ | Session key + client IP (X-Forwarded-For aware) token bucket |
-| **SSO / OIDC** | ❌ | Static tokens only — no Okta/Azure AD/Google Workspace integration |
+| **SSO / OIDC** | ✅ | Google, Microsoft, Okta, Auth0, Keycloak — configurable from the Auth tab (07) without restart |
 | **Multi-tenancy** | ❌ | Single policy for all traffic — no per-team isolation |
 | **High availability** | ❌ | Single container + SQLite — no clustering or shared state |
 | **Prometheus metrics** | ❌ | No `/metrics` endpoint for Grafana/Datadog |

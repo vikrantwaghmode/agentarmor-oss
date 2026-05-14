@@ -65,18 +65,32 @@ scanners:
         redact_patterns:
             - rule: (?i)(sk-[a-zA-Z0-9]{20,})
               enabled: true
+              strategy: mask
+              mask_prefix: 7
+              mask_suffix: 4
             - rule: (?i)(sk-ant-[a-zA-Z0-9-]{20,})
               enabled: true
+              strategy: mask
+              mask_prefix: 6
+              mask_suffix: 4
             - rule: AIza[0-9A-Za-z\-_]{35}
               enabled: true
+              strategy: replace
+              replacement: '[REDACTED_GOOGLE_KEY]'
             - rule: ghp_[0-9a-zA-Z]{36}
               enabled: true
+              strategy: hash
             - rule: xox[pboa]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-z0-9]{32}
               enabled: true
+              strategy: replace
+              replacement: '[REDACTED_SLACK_TOKEN]'
             - rule: ey[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*
               enabled: true
+              strategy: replace
+              replacement: '[REDACTED_JWT]'
             - rule: '-----BEGIN[ A-Z0-9]+PRIVATE KEY-----'
               enabled: true
+              strategy: remove
     pii:
         enabled: true
         block_patterns:
@@ -160,9 +174,13 @@ scanners:
         max_tool_calls_per_session: 100
         max_blocks_per_session: 10
         max_high_risk_calls_per_session: 5
-
 webhooks: []
-
 threat_feeds:
     enabled: false
     feeds: []
+skills_rag:
+    enabled: true
+    url: http://ollama:11434
+    model: nomic-embed-text
+    auto_route: true
+    auto_route_threshold: 0.7

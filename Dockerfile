@@ -28,7 +28,7 @@ RUN pnpm ui:install
 RUN pnpm ui:build
 
 # --- Stage 2: Build AgentArmor Go binaries ---
-FROM golang:1.24-bookworm AS proxy-build
+FROM golang:1.25-bookworm AS proxy-build
 
 RUN apt-get update && apt-get install -y gcc libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 
@@ -39,7 +39,7 @@ COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go \
+    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go \
     && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./firewall.go
 
 # --- Stage 3: Final runtime ---

@@ -166,6 +166,17 @@ type Config struct {
 		AutoRoute          bool    `yaml:"auto_route" json:"auto_route"`
 		AutoRouteThreshold float64 `yaml:"auto_route_threshold" json:"auto_route_threshold"`
 	} `yaml:"skills_rag" json:"skills_rag"`
+	SSO struct {
+		Enabled      bool     `yaml:"enabled" json:"enabled"`
+		Issuer       string   `yaml:"issuer" json:"issuer"`
+		ClientID     string   `yaml:"client_id" json:"client_id"`
+		ClientSecret string   `yaml:"client_secret" json:"client_secret,omitempty"`
+		RedirectURL  string   `yaml:"redirect_url" json:"redirect_url"`
+		AdminGroups  []string `yaml:"admin_groups" json:"admin_groups"`
+		UserGroups   []string `yaml:"user_groups" json:"user_groups"`
+		Scopes       []string `yaml:"scopes" json:"scopes"`
+		ProviderName string   `yaml:"provider_name,omitempty" json:"provider_name,omitempty"`
+	} `yaml:"sso" json:"sso"`
 }
 
 type WebhookEntry struct {
@@ -1224,6 +1235,14 @@ func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payload
 // ──────────────────────────────────────────────
 
 func getRole(r *http.Request) string {
+	// 1. OIDC session cookie (human users via SSO)
+	if oidcEnabled {
+		if sess := getSessionFromRequest(r); sess != nil {
+			return sess.Role
+		}
+	}
+
+	// 2. Static Bearer token (service accounts, CLI, backward-compat)
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return "none"
@@ -1425,6 +1444,30 @@ func loadPolicy() {
 	}
 
 	log.Println("✅ Policy loaded and applied successfully!")
+
+	// Re-init OIDC if the SSO section changed (runs in background, doesn't block hot-reload).
+	sso := newPolicy.SSO
+	go ReinitOIDCFromPolicy(struct {
+		Enabled      bool
+		Issuer       string
+		ClientID     string
+		ClientSecret string
+		RedirectURL  string
+		AdminGroups  []string
+		UserGroups   []string
+		Scopes       []string
+		ProviderName string
+	}{
+		Enabled:      sso.Enabled,
+		Issuer:       sso.Issuer,
+		ClientID:     sso.ClientID,
+		ClientSecret: sso.ClientSecret,
+		RedirectURL:  sso.RedirectURL,
+		AdminGroups:  sso.AdminGroups,
+		UserGroups:   sso.UserGroups,
+		Scopes:       sso.Scopes,
+		ProviderName: sso.ProviderName,
+	})
 }
 
 func watchPolicyFile() {
@@ -2299,9 +2342,15 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 
 	role := getRole(r)
 
-	// This public endpoint lets the UI check a token's role.
+	// Public endpoints — no auth required (checked before the auth gate below).
 	if endpoint == "auth/role" && r.Method == http.MethodGet {
 		json.NewEncoder(w).Encode(map[string]string{"role": role})
+		return
+	}
+	if endpoint == "oidc/status" && r.Method == http.MethodGet {
+		// Must be public so the login page can decide which auth UI to show
+		// before the user has a token or OIDC session.
+		json.NewEncoder(w).Encode(getOIDCStatus(r))
 		return
 	}
 
@@ -2514,6 +2563,67 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 
 		log.Println("🧱 Firewall rules updated and re-applied dynamically.")
 		w.Write([]byte(`{"ok":true}`))
+
+	// GET /armor/api/sso — return current SSO config (secret masked as ****)
+	case endpoint == "sso" && r.Method == http.MethodGet:
+		policyLock.RLock()
+		sso := policy.SSO
+		policyLock.RUnlock()
+		// Never expose the real secret over the API
+		masked := sso
+		if masked.ClientSecret != "" {
+			masked.ClientSecret = "****"
+		}
+		json.NewEncoder(w).Encode(masked)
+
+	// POST /armor/api/sso — save SSO config to policy.yaml and trigger re-init
+	case endpoint == "sso" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var incoming struct {
+			Enabled      bool     `json:"enabled"`
+			Issuer       string   `json:"issuer"`
+			ClientID     string   `json:"client_id"`
+			ClientSecret string   `json:"client_secret"` // "****" means keep existing
+			RedirectURL  string   `json:"redirect_url"`
+			AdminGroups  []string `json:"admin_groups"`
+			UserGroups   []string `json:"user_groups"`
+			Scopes       []string `json:"scopes"`
+			ProviderName string   `json:"provider_name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		policyLock.Lock()
+		// Preserve existing secret if dashboard sent the masked placeholder
+		if incoming.ClientSecret == "****" {
+			incoming.ClientSecret = policy.SSO.ClientSecret
+		}
+		policy.SSO.Enabled = incoming.Enabled
+		policy.SSO.Issuer = incoming.Issuer
+		policy.SSO.ClientID = incoming.ClientID
+		policy.SSO.ClientSecret = incoming.ClientSecret
+		policy.SSO.RedirectURL = incoming.RedirectURL
+		policy.SSO.AdminGroups = incoming.AdminGroups
+		policy.SSO.UserGroups = incoming.UserGroups
+		policy.SSO.Scopes = incoming.Scopes
+		policy.SSO.ProviderName = incoming.ProviderName
+		snap := policy
+		policyLock.Unlock()
+		// Write to policy.yaml so it persists across restarts
+		if data, err := yaml.Marshal(snap); err == nil {
+			if werr := os.WriteFile("policy.yaml", data, 0644); werr != nil {
+				http.Error(w, `{"error":"write failed"}`, http.StatusInternalServerError)
+				return
+			}
+			if serr := saveSnapshot("sso config update"); serr != nil {
+				log.Printf("⚠️  SSO snapshot failed: %v", serr)
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 
 	// GET /armor/api/skills
 	case endpoint == "skills" && r.Method == http.MethodGet:
@@ -3301,6 +3411,10 @@ func main() {
 	initPrivateRanges()
 	initSkills()
 
+	if err := InitOIDC(); err != nil {
+		log.Fatalf("❌ OIDC init failed: %v", err)
+	}
+
 	initAuditDB()
 	loadPolicy()
 	go watchPolicyFile()
@@ -3333,6 +3447,13 @@ func main() {
 	proxy.ModifyResponse = modifyProxyResponse
 
 	// --- Dashboard (/armor/) ---
+	// OIDC routes (only active when OIDC_ENABLED=true)
+	if oidcEnabled {
+		http.HandleFunc("/armor/login", HandleOIDCLogin)
+		http.HandleFunc("/armor/callback", HandleOIDCCallback)
+		http.HandleFunc("/armor/logout", HandleOIDCLogout)
+	}
+
 	http.HandleFunc("/armor/", handleDashboard)
 	http.HandleFunc("/armor", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/armor/", http.StatusMovedPermanently)
