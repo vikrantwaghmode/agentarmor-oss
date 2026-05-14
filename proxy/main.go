@@ -1242,12 +1242,44 @@ func getRole(r *http.Request) string {
 	return "none"
 }
 
+// getClientIP extracts the real client IP, honouring X-Forwarded-For when
+// the proxy sits behind a load balancer.
+func getClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 func getSessionKey(r *http.Request) string {
 	key := r.Header.Get("Authorization")
 	if key == "" {
 		key = r.RemoteAddr
 	}
 	return key
+}
+
+// checkIPRateLimit applies an IP-level rate limit as a fallback layer — useful
+// when session keys are missing or spoofed. Uses the same token-bucket algorithm
+// but keyed on the client IP rather than the Authorization header.
+func checkIPRateLimit(r *http.Request) bool {
+	policyLock.RLock()
+	cfg := policy.Scanners.RateLimiting
+	policyLock.RUnlock()
+	if !cfg.Enabled {
+		return true
+	}
+	ip := getClientIP(r)
+	return checkRateLimit("ip:" + ip)
 }
 
 func loadPolicy() {
@@ -1275,7 +1307,27 @@ func loadPolicy() {
 
 	var newPolicy Config
 	if err := yaml.Unmarshal(data, &newPolicy); err != nil {
-		log.Fatalf("❌ Error parsing YAML in %s: %v. Please fix the file or delete it to regenerate a default.", policyPath, err)
+		// During hot-reload keep the active policy rather than crashing.
+		// compiledSecretRegexes being non-nil means a policy has already been loaded once.
+		policyLock.RLock()
+		alreadyLoaded := len(compiledSecretRegexes) > 0
+		policyLock.RUnlock()
+		if alreadyLoaded {
+			log.Printf("⚠️  Bad YAML in %s: %v — keeping previous policy active", policyPath, err)
+			return
+		}
+		log.Fatalf("❌ Error parsing YAML in %s: %v", policyPath, err)
+	}
+
+	// compileRegex wraps regexp.Compile and skips invalid patterns with a warning
+	// instead of panicking — critical for safe hot-reload.
+	compileRegex := func(pattern string) (*regexp.Regexp, bool) {
+		rx, err := regexp.Compile(pattern)
+		if err != nil {
+			log.Printf("⚠️  Invalid regex pattern '%s': %v — rule skipped", pattern, err)
+			return nil, false
+		}
+		return rx, true
 	}
 
 	var currentRuleCounts ScannerRuleCounts
@@ -1289,7 +1341,9 @@ func loadPolicy() {
 	// Count enabled Secrets rules
 	var newSecretRegexes []*regexp.Regexp
 	for _, rule := range newPolicy.Scanners.Secrets.RedactPatterns {
-		newSecretRegexes = append(newSecretRegexes, regexp.MustCompile(rule.Rule))
+		if rx, ok := compileRegex(rule.Rule); ok {
+			newSecretRegexes = append(newSecretRegexes, rx)
+		}
 		if rule.Enabled {
 			currentRuleCounts.Secrets++
 		}
@@ -1297,7 +1351,9 @@ func loadPolicy() {
 	// Count enabled PII rules
 	var newPiiRegexes []*regexp.Regexp
 	for _, rule := range newPolicy.Scanners.PII.BlockPatterns {
-		newPiiRegexes = append(newPiiRegexes, regexp.MustCompile(rule.Rule))
+		if rx, ok := compileRegex(rule.Rule); ok {
+			newPiiRegexes = append(newPiiRegexes, rx)
+		}
 		if rule.Enabled {
 			currentRuleCounts.PII++
 		}
@@ -1305,7 +1361,9 @@ func loadPolicy() {
 	// Count enabled Malicious Content rules
 	var newMaliciousRegexes []*regexp.Regexp
 	for _, rule := range newPolicy.Scanners.MaliciousContent.BlockPatterns {
-		newMaliciousRegexes = append(newMaliciousRegexes, regexp.MustCompile(rule.Rule))
+		if rx, ok := compileRegex(rule.Rule); ok {
+			newMaliciousRegexes = append(newMaliciousRegexes, rx)
+		}
 		if rule.Enabled {
 			currentRuleCounts.MaliciousContent++
 		}
@@ -1314,7 +1372,9 @@ func loadPolicy() {
 	// Count enabled Internal IP Protection rules
 	var newInternalIPRegexes []*regexp.Regexp
 	for _, rule := range newPolicy.Scanners.InternalIPProtection.BlockPatterns {
-		newInternalIPRegexes = append(newInternalIPRegexes, regexp.MustCompile(rule.Rule))
+		if rx, ok := compileRegex(rule.Rule); ok {
+			newInternalIPRegexes = append(newInternalIPRegexes, rx)
+		}
 		if rule.Enabled {
 			currentRuleCounts.InternalIPs++
 		}
@@ -1323,9 +1383,9 @@ func loadPolicy() {
 	// Count enabled Canary Token rules
 	var newCanaryRegexes []*regexp.Regexp
 	for _, rule := range newPolicy.Scanners.CanaryTokens.Tokens {
-		// Canary tokens are simple strings, but we quote them to be safe in a regex context.
-		// We also add (?i) to make the match case-insensitive for robustness.
-		newCanaryRegexes = append(newCanaryRegexes, regexp.MustCompile("(?i)"+regexp.QuoteMeta(rule.Rule)))
+		if rx, ok := compileRegex("(?i)" + regexp.QuoteMeta(rule.Rule)); ok {
+			newCanaryRegexes = append(newCanaryRegexes, rx)
+		}
 		if rule.Enabled {
 			currentRuleCounts.CanaryTokens++
 		}
@@ -1879,15 +1939,26 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 	var requestFrame map[string]interface{}
 
 	if direction == "Request" {
-		// Try to parse as a generic JSON object first.
 		if err := json.Unmarshal([]byte(payload), &requestFrame); err == nil {
-			// Now, inspect the map to see if it matches the UI frame structure.
 			if messages, ok := requestFrame["messages"].([]interface{}); ok && len(messages) > 0 {
-				if firstMessage, ok := messages[0].(map[string]interface{}); ok {
-					if content, ok := firstMessage["content"].(string); ok {
-						contentToScan = content
-						isUIFrame = true
+				// Scan ALL non-system messages, not just messages[0].
+				// This covers multi-turn agentic workflows where injections may
+				// appear in earlier turns of the conversation.
+				var parts []string
+				for _, m := range messages {
+					if msg, ok := m.(map[string]interface{}); ok {
+						role, _ := msg["role"].(string)
+						if role == "system" {
+							continue // skip — contains our injected canary + skill context
+						}
+						if content, ok := msg["content"].(string); ok && content != "" {
+							parts = append(parts, content)
+						}
 					}
+				}
+				if len(parts) > 0 {
+					contentToScan = strings.Join(parts, "\n\n---\n\n")
+					isUIFrame = true
 				}
 			}
 		}
@@ -2143,17 +2214,35 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 			// (device, auth, nonce, etc.) are preserved — a fixed struct would
 			// silently drop any field not declared in it.
 			if isUIFrame {
-				// We already have the parsed frame in 'requestFrame'. No need to unmarshal again.
-				if msgs, ok := requestFrame["messages"].([]interface{}); ok && len(msgs) > 0 {
-					if msg0, ok := msgs[0].(map[string]interface{}); ok {
-						msg0["content"] = redactedContent
-						if modified, err := json.Marshal(requestFrame); err == nil {
-							result.Payload = string(modified)
-						} else {
-							result.Blocked = true
-							result.Redacted = false
-							result.RuleMatched = "Redaction marshal failed"
+				// Apply redaction to ALL non-system messages individually
+				// so multi-turn conversations are fully sanitised.
+				if msgs, ok := requestFrame["messages"].([]interface{}); ok {
+					for _, m := range msgs {
+						if msg, ok := m.(map[string]interface{}); ok {
+							role, _ := msg["role"].(string)
+							if role == "system" {
+								continue
+							}
+							if content, ok := msg["content"].(string); ok {
+								redacted := content
+								for i, rx := range compiledSecretRegexes {
+									r := policy.Scanners.Secrets.RedactPatterns[i]
+									if r.Enabled {
+										redacted = rx.ReplaceAllStringFunc(redacted, func(matched string) string {
+											return applyRedaction(matched, r)
+										})
+									}
+								}
+								msg["content"] = redacted
+							}
 						}
+					}
+					if modified, err := json.Marshal(requestFrame); err == nil {
+						result.Payload = string(modified)
+					} else {
+						result.Blocked = true
+						result.Redacted = false
+						result.RuleMatched = "Redaction marshal failed"
 					}
 				}
 			} else {
@@ -2171,13 +2260,35 @@ func scanPayload(payload string, direction string, sessionKey string) ScanResult
 
 func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	subpath := strings.TrimPrefix(r.URL.Path, "/armor")
-	// Allow Cross-Origin requests for API endpoints so an external UX (like OpenClaw) can call them.
-	// For production, you might want to restrict this to the specific origin of the Claw UX.
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// CORS — restricted to the proxy's own origin by default.
+	// Set AGENTARMOR_CORS_ORIGINS (comma-separated) to allow additional origins.
+	origin := r.Header.Get("Origin")
+	allowed := false
+	if origin == "" {
+		allowed = true // same-origin / non-browser request
+	} else {
+		// Always allow the proxy's own host
+		host := r.Host
+		if origin == "http://"+host || origin == "https://"+host {
+			allowed = true
+		}
+		// Check configured extra origins
+		if extra := os.Getenv("AGENTARMOR_CORS_ORIGINS"); extra != "" {
+			for _, o := range strings.Split(extra, ",") {
+				if strings.TrimSpace(o) == origin {
+					allowed = true
+					break
+				}
+			}
+		}
+	}
+	if allowed {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-	// Handle preflight OPTIONS requests sent by browsers
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -2785,7 +2896,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 			}
 
 			// --- Rate Limiting for WebSocket messages ---
-			if !checkRateLimit(sessionKey) {
+			if !checkRateLimit(sessionKey) || !checkIPRateLimit(r) {
 				logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "BLOCKED", "Rate Limit Exceeded", string(msg))
 				// Send an error frame back
 				var reqFrame struct {
@@ -2913,7 +3024,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 	sessionKey := getSessionKey(r)
 
 	// ──── Rate Limiting ────
-	if !checkRateLimit(sessionKey) {
+	if !checkRateLimit(sessionKey) || !checkIPRateLimit(r) {
 		logAuditEvent(r.RemoteAddr, sessionKey, "Request", "BLOCKED", "Rate Limit Exceeded", "")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After", "60") // Suggest waiting a minute
@@ -3232,10 +3343,35 @@ func main() {
 		handleRoot(w, r, proxy, target)
 	})
 
-	log.Println("🛡️  Security Proxy running on http://localhost:8080")
+	log.Println("🔒 Security Proxy running — HTTPS on https://localhost:8443")
 	log.Println("🔌 WebSocket scanning: ENABLED")
-	log.Println("📊 Dashboard: http://localhost:8080/armor/")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("📊 Dashboard: https://localhost:8443/armor/")
+	tlsCert := os.Getenv("TLS_CERT")
+	tlsKey := os.Getenv("TLS_KEY")
+
+	if tlsCert != "" && tlsKey != "" {
+		// HTTP on 8080 redirects to HTTPS on 8443 so existing bookmarks / clients
+		// that hit the plain-text port are upgraded automatically.
+		go func() {
+			log.Printf("↪  HTTP→HTTPS redirect listening on http://0.0.0.0:8080")
+			log.Fatal(http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				target := "https://" + r.Host
+				// Replace :8080 with :8443 in the host if present
+				if h := r.Host; h != "" {
+					target = "https://" + strings.Replace(h, ":8080", ":8443", 1) + r.RequestURI
+				} else {
+					target = "https://localhost:8443" + r.RequestURI
+				}
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+			})))
+		}()
+		log.Printf("🔒 TLS proxy listening on https://0.0.0.0:8443")
+		log.Printf("📊 Dashboard: https://localhost:8443/armor/")
+		log.Fatal(http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil))
+	} else {
+		log.Printf("⚠️  TLS_CERT / TLS_KEY not set — falling back to plain HTTP on :8080")
+		log.Fatal(http.ListenAndServe(":8080", nil))
+	}
 }
 
 // streamAndScan implements the sliding-window scanner for response bodies.

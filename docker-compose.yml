@@ -5,7 +5,8 @@ services:
     cap_add:
       - NET_ADMIN           # Required for iptables firewall
     ports:
-      - "8080:8080"          # AgentArmor Proxy (the only entry point)
+      - "8443:8443"          # AgentArmor Proxy — HTTPS (primary)
+      - "8080:8080"          # HTTP redirect → https://host:8443
     environment:
       - ADMIN_TOKEN=${ADMIN_TOKEN}
       - USER_TOKEN=${USER_TOKEN}
@@ -22,6 +23,7 @@ services:
       - ./openclaw-plugins:/app/openclaw/dist/custom-plugins
       - ./policy.yaml:/app/policy.yaml  # Live-reloadable policy
       - ./firewall.yaml:/app/firewall.yaml
+      - ./certs:/app/certs              # TLS certs — auto-generated if empty, replace for production
       - ./skills:/app/skills            # Live-editable skill definitions + RAG docs
     restart: unless-stopped
     env_file:

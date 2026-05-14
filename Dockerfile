@@ -51,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    openssl \
     python3 \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -85,8 +86,8 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 WORKDIR /app
 
-# AgentArmor listens on 8080 (the only externally exposed port)
+# 8443 = HTTPS (primary), 8080 = HTTP redirect → 8443
 # OpenClaw gateway is on 127.0.0.1:18789 (loopback only, behind the proxy)
-EXPOSE 8080
+EXPOSE 8443 8080
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

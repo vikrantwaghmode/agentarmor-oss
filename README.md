@@ -60,7 +60,7 @@ AgentArmor is built around three principles:
 | Anomaly Scoring | In | Block/Alert | 3-signal behavioural scorer (0–1); configurable alert + block thresholds |
 | Zero-Trust Tool Approval | In | Block | `exec`, `browser`, `sessions_spawn` blocked until admin approves per-session |
 | Blast Radius Cap | In | Block | Hard limits on tool calls, blocks, high-risk calls per session |
-| Rate Limiting | In | Block | Token bucket per session key — 60 req/min, burst 120 |
+| Rate Limiting | In | Block | Token bucket per session key **and** per client IP (X-Forwarded-For aware) — 60 req/min, burst 120 |
 | Auto-Repave Trigger | — | Repave | Fires kill-sessions + canary rotation when event thresholds are crossed |
 | Skills + Semantic RAG | — | Inject | 5 built-in role personas; BM25 or vector embedding retrieval; auto-routes messages to best-matching skill |
 | SIEM / Webhooks | — | Notify | Multiple destinations: Slack / Splunk HEC / generic JSON; per-destination event filters |
@@ -71,6 +71,8 @@ AgentArmor is built around three principles:
 | Session Kill Switch | — | Repave | `POST /armor/api/sessions/kill` — closes all WS connections instantly |
 | Canary Rotation | — | Repave | `POST /armor/api/canary/rotate` — new token mid-run, old one immediately invalid |
 | Custom Redaction | — | Config | Per-rule strategies: replace with label, SHA-256 hash, mask prefix/suffix, or remove entirely |
+| Multi-turn Scanning | In | All | All non-system messages scanned, not just the first — covers full conversation history |
+| TLS by Default | — | Transport | Auto-generated self-signed cert on first run; HTTPS on `:8443`, HTTP→HTTPS redirect on `:8080` |
 | Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC, all posture config editable |
 
 ## Quick Start
@@ -78,20 +80,53 @@ AgentArmor is built around three principles:
 ```bash
 git clone https://github.com/vikrantwaghmode/agentarmor-oss.git
 cd agentarmor-oss
-cp .env.template .env          # set ADMIN_TOKEN, USER_TOKEN, GEMINI_API_KEY
+cp .env.template .env                            # set ADMIN_TOKEN, USER_TOKEN, GEMINI_API_KEY
 docker compose up --build -d
-docker exec ollama ollama pull llama3.2:1b   # LLM scanner model (~800 MB, once)
-# Dashboard → http://localhost:8080/armor/
+docker exec ollama ollama pull llama3.2:1b       # LLM scanner model (~800 MB, once)
+# Dashboard → https://localhost:8443/armor/
+# Accept the self-signed cert warning — or replace certs/server.crt + certs/server.key
 ```
+
+> **TLS is on by default.** A self-signed certificate is generated automatically on first run and stored in `./certs/`. Replace with a CA-signed cert for production — no rebuild needed.
 
 **`.env` keys:**
 ```bash
-ADMIN_TOKEN="..."          # full dashboard access
-USER_TOKEN="..."           # read-only dashboard
-LLM_PROVIDER="openclaw"   # openclaw | openai | anthropic | gemini
+ADMIN_TOKEN="..."               # full dashboard access
+USER_TOKEN="..."                # read-only dashboard
+LLM_PROVIDER="openclaw"        # openclaw | openai | anthropic | gemini
 GEMINI_API_KEY="AIza..."
 OPENCLAW_GATEWAY_TOKEN="..."
+
+# TLS — defaults to auto-generated self-signed cert
+# TLS_CERT="/certs/server.crt"   # path inside container
+# TLS_KEY="/certs/server.key"
+
+# CORS — comma-separated list of allowed extra origins (own host always allowed)
+# AGENTARMOR_CORS_ORIGINS="https://your-dashboard.example.com"
 ```
+
+## Transport Security
+
+All traffic is encrypted out of the box using TLS termination:
+
+```
+Browser / Client
+    │  HTTPS :8443 (TLS)   WSS :8443 (TLS)
+    ▼
+AgentArmor Proxy ← TLS terminates here
+    │  HTTP (loopback only — never leaves the host)
+    ▼
+OpenClaw Gateway :18789 (bound to 127.0.0.1)
+```
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `8443` | HTTPS / WSS | All proxy traffic — scanner pipeline, dashboard, WebSocket relay |
+| `8080` | HTTP | Redirect only → `https://host:8443` |
+
+**Production cert:** Mount your CA-signed certificate into `./certs/` as `server.crt` + `server.key`. The proxy picks them up on next restart — no rebuild.
+
+**OpenClaw UI** is served through the proxy on `https://localhost:8443` — the browser sees full TLS. The loopback hop (AgentArmor → OpenClaw gateway) is plain HTTP on `127.0.0.1` only, which is standard TLS termination behaviour.
 
 ## How It Works
 
@@ -229,15 +264,43 @@ agentarmor-oss/
 │   └── policy.yaml      # Embedded default policy (go:embed)
 ├── skills/              # Built-in skill definitions (volume-mounted)
 │   └── <id>/skill.yaml + knowledge/*.md
+├── certs/               # TLS certificates — auto-generated if empty; replace for production
+│   ├── server.crt
+│   └── server.key
 ├── policy.yaml          # Live config (hot-reloads)
 ├── firewall.yaml        # Egress allow-list
 ├── docker-compose.yml   # proxy + presidio-analyzer + ollama
 └── assets/              # logo.png + banner.png
 ```
 
+## Enterprise Readiness
+
+| Area | Status | Notes |
+|------|--------|-------|
+| TLS / transport encryption | ✅ | Auto self-signed by default; bring your own cert for production |
+| CORS restriction | ✅ | Origin-restricted; `AGENTARMOR_CORS_ORIGINS` for extra origins |
+| Audit trail | ✅ | Full — client IP, session key, rule, payload snippet; WAL-mode SQLite |
+| SIEM integration | ✅ | Multiple webhook destinations (Slack, Splunk, generic) |
+| RBAC | ✅ | Admin / user roles on dashboard and all API endpoints |
+| Policy hot-reload + rollback | ✅ | Snapshot on every save; one-click restore |
+| Graceful config validation | ✅ | Invalid regex skipped with warning; bad YAML keeps previous policy active |
+| Multi-turn conversation scanning | ✅ | All non-system messages scanned, not just the first |
+| IP-level rate limiting | ✅ | Session key + client IP (X-Forwarded-For aware) token bucket |
+| **SSO / OIDC** | ❌ | Static tokens only — no Okta/Azure AD/Google Workspace integration |
+| **Multi-tenancy** | ❌ | Single policy for all traffic — no per-team isolation |
+| **High availability** | ❌ | Single container + SQLite — no clustering or shared state |
+| **Prometheus metrics** | ❌ | No `/metrics` endpoint for Grafana/Datadog |
+| **Secrets vault** | ❌ | API keys in env vars — no Vault/KMS integration |
+| **Cert auto-renewal** | ❌ | No ACME/Let's Encrypt — manual rotation |
+
+The security *design* is enterprise-grade. Gaps 1–3 (SSO, multi-tenancy, HA) are the blockers for large-scale enterprise deployment.
+
 ## Roadmap
 
-- [ ] **Multi-tenancy** — Isolated policies and audit trails per application or team
+- [ ] **SSO / OIDC** — Okta, Azure AD, Google Workspace integration to replace static tokens
+- [ ] **Multi-tenancy** — Isolated policies, audit logs, and rate limits per application or team
+- [ ] **High availability** — PostgreSQL audit log, Redis rate-limiter state, horizontal scaling
+- [ ] **Prometheus metrics** — `/metrics` endpoint for Grafana / Datadog
 - [ ] **WASM filters** — Custom filtering logic without recompiling
 
 ## Contributing

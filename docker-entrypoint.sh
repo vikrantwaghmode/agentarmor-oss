@@ -152,15 +152,47 @@ else
 fi
 
 # -----------------------------------------------
-# 2. Apply iptables Firewall (Layer 3/4)
+# 2. TLS Certificate Setup
+# -----------------------------------------------
+CERT_DIR="/app/certs"
+mkdir -p "${CERT_DIR}"
+
+if [ -n "$TLS_CERT" ] && [ -n "$TLS_KEY" ]; then
+    echo "🔒 Using provided TLS certificate: ${TLS_CERT}"
+else
+    # Auto-generate a self-signed certificate if none is supplied.
+    # This ensures all traffic is encrypted out of the box.
+    # Replace with a CA-signed cert (TLS_CERT / TLS_KEY) for production.
+    export TLS_CERT="${CERT_DIR}/server.crt"
+    export TLS_KEY="${CERT_DIR}/server.key"
+
+    if [ ! -f "${TLS_CERT}" ]; then
+        echo "🔒 Generating self-signed TLS certificate..."
+        openssl req -x509 -newkey rsa:4096 \
+            -keyout "${TLS_KEY}" \
+            -out  "${TLS_CERT}" \
+            -days 365 -nodes \
+            -subj "/CN=agentarmor/O=AgentArmor Security Proxy/C=US" \
+            -addext "subjectAltName=DNS:localhost,DNS:agentarmor,IP:127.0.0.1,IP:::1" \
+            2>/dev/null
+        echo "✅ Self-signed cert generated (valid 365 days)"
+        echo "   ⚠️  Browser will warn — expected for self-signed certs."
+        echo "   For production: set TLS_CERT and TLS_KEY to a CA-signed certificate."
+    else
+        echo "🔒 Reusing existing self-signed certificate"
+    fi
+fi
+
+# -----------------------------------------------
+# 3. Apply iptables Firewall (Layer 3/4)
 # -----------------------------------------------
 echo "🧱 Applying AgentArmor network firewall..."
 ./agentarmor-firewall || echo "⚠️  Firewall setup failed (may need NET_ADMIN capability)"
 
 # -----------------------------------------------
-# 3. Start AgentArmor Proxy (foreground, Layer 7)
+# 4. Start AgentArmor Proxy (foreground, Layer 7)
 # -----------------------------------------------
-echo "🛡️  Starting AgentArmor Security Proxy on 0.0.0.0:8080..."
+echo "🔒 Starting AgentArmor Security Proxy (TLS) on https://0.0.0.0:8443..."
 echo "============================================"
 echo "  ✅ AgentArmor is LIVE"
 echo "  🌐 Open http://localhost:8080/armor/ in your browser"
