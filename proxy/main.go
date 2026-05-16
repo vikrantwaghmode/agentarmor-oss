@@ -3029,15 +3029,30 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 			return
 		}
-		needsRestart, err := saveInfraConfig(newCfg)
+		restartReasons, hotApplied, err := saveInfraConfig(newCfg)
 		if err != nil {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":            true,
-			"needs_restart": needsRestart,
+			"ok":              true,
+			"needs_restart":   len(restartReasons) > 0,
+			"restart_reasons": restartReasons,
+			"hot_applied":     hotApplied,
 		})
+
+	// POST /armor/api/restart — gracefully exits so Docker restarts the container (admin only)
+	case endpoint == "restart" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		go func() {
+			time.Sleep(300 * time.Millisecond) // let the response flush before exiting
+			log.Println("🔄 Restart requested from dashboard — exiting (Docker will restart the container)")
+			os.Exit(0)
+		}()
 
 	default:
 		http.NotFound(w, r)

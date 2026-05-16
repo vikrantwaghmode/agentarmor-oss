@@ -97,14 +97,15 @@ func applyInfraEnvVars(cfg InfraConfig) {
 }
 
 // saveInfraConfig persists the new config to infra.yaml, then hot-applies
-// whatever it can. Returns whether a container restart is needed.
-func saveInfraConfig(newCfg InfraConfig) (needsRestart bool, err error) {
+// whatever it can. Returns lists of what was applied immediately and what
+// needs a restart, plus any write error.
+func saveInfraConfig(newCfg InfraConfig) (restartReasons, hotApplied []string, err error) {
 	data, err := yaml.Marshal(newCfg)
 	if err != nil {
-		return false, err
+		return nil, nil, err
 	}
 	if err := os.WriteFile(infraConfigPath, data, 0644); err != nil {
-		return false, err
+		return nil, nil, err
 	}
 
 	infraConfigMu.Lock()
@@ -112,15 +113,15 @@ func saveInfraConfig(newCfg InfraConfig) (needsRestart bool, err error) {
 	infraConfig = newCfg
 	infraConfigMu.Unlock()
 
-	return hotApplyInfra(oldCfg, newCfg), nil
+	restartReasons, hotApplied = hotApplyInfra(oldCfg, newCfg)
+	return restartReasons, hotApplied, nil
 }
 
-// hotApplyInfra applies changes that don't require a restart.
-// Returns true when at least one change needs a restart.
-func hotApplyInfra(old, new InfraConfig) bool {
-	restart := false
-
-	// Redis — reconnect immediately
+// hotApplyInfra applies changes that don't require a restart immediately.
+// Returns (restartReasons, hotApplied) so the dashboard can tell the user
+// exactly which settings took effect and which need a restart.
+func hotApplyInfra(old, new InfraConfig) (restartReasons, hotApplied []string) {
+	// Redis — reconnect immediately, no restart needed
 	if new.Redis.URL != old.Redis.URL {
 		os.Setenv("REDIS_URL", new.Redis.URL)
 		redisEnabled = false
@@ -129,9 +130,10 @@ func hotApplyInfra(old, new InfraConfig) bool {
 		redisPass = ""
 		initRedis()
 		log.Printf("🔴 Redis config reloaded (%s)", new.Redis.URL)
+		hotApplied = append(hotApplied, "Redis rate limiting")
 	}
 
-	// Metrics token — read via os.Getenv on every request, so updating env is enough
+	// Metrics token — read from env on every request, updating env is enough
 	if new.Metrics.Token != old.Metrics.Token {
 		if new.Metrics.Token != "" {
 			os.Setenv("METRICS_TOKEN", new.Metrics.Token)
@@ -139,13 +141,16 @@ func hotApplyInfra(old, new InfraConfig) bool {
 			os.Unsetenv("METRICS_TOKEN")
 		}
 		log.Printf("📊 Metrics token updated")
+		hotApplied = append(hotApplied, "Metrics scrape token")
 	}
 
-	// Database and ACME require a restart to take effect
+	// Database — requires restart
 	if new.Database.URL != old.Database.URL {
 		os.Setenv("DATABASE_URL", new.Database.URL)
-		restart = true
+		restartReasons = append(restartReasons, "Database (URL changed — new connection needs a fresh start)")
 	}
+
+	// ACME / TLS — requires restart to rebind the TLS listener
 	if new.ACME.Domain != old.ACME.Domain || new.ACME.Email != old.ACME.Email || new.ACME.Staging != old.ACME.Staging {
 		os.Setenv("ACME_DOMAIN", new.ACME.Domain)
 		os.Setenv("ACME_EMAIL", new.ACME.Email)
@@ -154,13 +159,13 @@ func hotApplyInfra(old, new InfraConfig) bool {
 		} else {
 			os.Unsetenv("ACME_STAGING")
 		}
-		restart = true
+		restartReasons = append(restartReasons, "TLS / ACME (cert listener must be restarted)")
 	}
 
-	if restart {
+	if len(restartReasons) > 0 {
 		infraNeedsRestart = true
 	}
-	return restart
+	return
 }
 
 // getInfraStatus returns the currently active infra config for the dashboard.

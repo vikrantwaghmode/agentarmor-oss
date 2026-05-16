@@ -2221,6 +2221,48 @@ function AuthSettings({role}){
 
 
 /* ═══ TENANTS TAB ═══ */
+/* ═══ RESTART DIALOG ═══ */
+function RestartDialog({reasons,hotApplied,onRestart,onLater,restarting}){
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',
+      alignItems:'center',justifyContent:'center',zIndex:2000}}>
+      <div style={{background:'var(--s1)',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+        padding:28,maxWidth:440,width:'100%',margin:16,boxShadow:'0 20px 60px rgba(0,0,0,.5)'}}>
+        <div style={{fontSize:15,fontWeight:700,color:'var(--t2)',marginBottom:6}}>Restart required</div>
+        <div style={{fontSize:11,color:'var(--t3)',marginBottom:14}}>
+          The following changes are saved but need a container restart to activate:
+        </div>
+        <ul style={{margin:'0 0 14px',padding:'0 0 0 16px',listStyle:'disc'}}>
+          {reasons.map(r=><li key={r} style={{fontSize:11,color:'var(--yellow)',marginBottom:4}}>{r}</li>)}
+        </ul>
+        {hotApplied&&hotApplied.length>0&&(
+          <div style={{padding:'8px 12px',marginBottom:14,background:'rgba(74,222,128,.07)',
+            border:'1px solid rgba(74,222,128,.2)',borderRadius:'var(--r)',fontSize:11,color:'var(--green)'}}>
+            ✓ Already live: {hotApplied.join(' · ')}
+          </div>
+        )}
+        <div style={{fontSize:11,color:'var(--t3)',marginBottom:20}}>
+          Active sessions will be interrupted for a few seconds while the container restarts.
+          Docker will bring it back up automatically.
+        </div>
+        <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+          <button onClick={onLater} disabled={restarting}
+            style={{padding:'7px 16px',background:'var(--bg)',border:'1px solid var(--b2)',
+              borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,cursor:'pointer',fontFamily:'var(--font)'}}>
+            Later
+          </button>
+          <button onClick={onRestart} disabled={restarting}
+            style={{padding:'7px 16px',background:'var(--red)',border:'none',
+              borderRadius:'var(--r)',color:'#fff',fontSize:11,fontWeight:700,
+              cursor:restarting?'wait':'pointer',fontFamily:'var(--font)',opacity:restarting?.6:1}}>
+            {restarting?'Restarting…':'Restart Now'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══ INFRASTRUCTURE TAB ═══ */
 function InfraTab({stats,role}){
   const isAdmin=role==='admin';
@@ -2229,6 +2271,9 @@ function InfraTab({stats,role}){
   const[saving,setSaving]=useState(false);
   const[result,setResult]=useState(null);
   const[copied,setCopied]=useState('');
+  const[restartDialog,setRestartDialog]=useState(null); // {reasons,hotApplied}
+  const[restarting,setRestarting]=useState(false);
+  const[confirmRestart,setConfirmRestart]=useState(false);
 
   const load=()=>api('infra').then(r=>r.json()).then(d=>{
     setInfra(d);
@@ -2238,6 +2283,19 @@ function InfraTab({stats,role}){
 
   const set=(section,field,val)=>setForm(f=>({...f,[section]:{...f[section],[field]:val}}));
 
+  const doRestart=async()=>{
+    setRestarting(true);
+    try{
+      await api('restart',{method:'POST'});
+      // Wait for container to go down then reload
+      setTimeout(()=>{
+        const poll=setInterval(()=>{
+          fetch('/armor/api/auth/role').then(r=>{if(r.ok){clearInterval(poll);window.location.reload();}}).catch(()=>{});
+        },1500);
+      },1500);
+    }catch(e){setRestarting(false);}
+  };
+
   const save=async()=>{
     setSaving(true);setResult(null);
     try{
@@ -2245,6 +2303,9 @@ function InfraTab({stats,role}){
       const d=await r.json();
       setResult(d);
       load();
+      if(d.needs_restart){
+        setRestartDialog({reasons:d.restart_reasons||[],hotApplied:d.hot_applied||[]});
+      }
     }catch(e){setResult({error:String(e)});}
     setSaving(false);
   };
@@ -2311,32 +2372,72 @@ function InfraTab({stats,role}){
   return(
     <div style={{maxWidth:860,margin:'0 auto',padding:24}}>
       <div className="page-label"><span className="page-label-dot"/><span>Infrastructure</span><span>·</span><span>HA, Metrics &amp; TLS</span></div>
+      {restartDialog&&(
+        <RestartDialog reasons={restartDialog.reasons} hotApplied={restartDialog.hotApplied}
+          restarting={restarting}
+          onRestart={()=>{setRestartDialog(null);doRestart();}}
+          onLater={()=>setRestartDialog(null)}/>
+      )}
+      {confirmRestart&&(
+        <RestartDialog reasons={['Manual restart requested by admin']} hotApplied={[]}
+          restarting={restarting}
+          onRestart={()=>{setConfirmRestart(false);doRestart();}}
+          onLater={()=>setConfirmRestart(false)}/>
+      )}
+      {restarting&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.8)',display:'flex',
+          flexDirection:'column',alignItems:'center',justifyContent:'center',zIndex:3000,gap:16}}>
+          <div style={{fontSize:32}}>🔄</div>
+          <div style={{fontSize:14,color:'var(--t2)',fontWeight:700}}>Restarting AgentArmor…</div>
+          <div style={{fontSize:11,color:'var(--t3)'}}>Page will reload automatically when the service is back up.</div>
+        </div>
+      )}
+
       <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24}}>
         <h1 className="page-headline">Storage, rate-limiting,<br/>certs and <span className="accent">observability</span>.</h1>
-        <div className="page-meta">
-          <div className="page-meta-row"><span className="page-meta-label">DB</span>
-            <span className="page-meta-val" style={{color:db==='postgres'?'var(--green)':'var(--t2)'}}>{db==='postgres'?'PostgreSQL':'SQLite'}</span>
+        <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
+          <div className="page-meta">
+            <div className="page-meta-row"><span className="page-meta-label">DB</span>
+              <span className="page-meta-val" style={{color:db==='postgres'?'var(--green)':'var(--t2)'}}>{db==='postgres'?'PostgreSQL':'SQLite'}</span>
+            </div>
+            <div className="page-meta-row"><span className="page-meta-label">Redis</span>
+              <span className="page-meta-val" style={{color:redisOn?'var(--green)':'var(--t3)'}}>{redisOn?'Connected':'Off'}</span>
+            </div>
           </div>
-          <div className="page-meta-row"><span className="page-meta-label">Redis</span>
-            <span className="page-meta-val" style={{color:redisOn?'var(--green)':'var(--t3)'}}>{redisOn?'Connected':'Off'}</span>
-          </div>
+          {isAdmin&&(
+            <button onClick={()=>setConfirmRestart(true)}
+              style={{padding:'6px 14px',background:'transparent',border:'1px solid var(--b2)',
+                borderRadius:'var(--r)',color:'var(--t3)',fontSize:11,cursor:'pointer',
+                fontFamily:'var(--font)',whiteSpace:'nowrap',marginTop:4}}>
+              ↺ Restart System
+            </button>
+          )}
         </div>
       </div>
 
       {needsRestart&&(
-        <div style={{padding:'10px 14px',marginBottom:16,background:'rgba(251,191,36,.08)',border:'1px solid rgba(251,191,36,.3)',borderRadius:'var(--r)',fontSize:11,color:'var(--yellow)'}}>
-          ⚠ One or more changes require a container restart to take effect (<code>docker compose restart agentarmor</code>).
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+          padding:'10px 14px',marginBottom:16,background:'rgba(251,191,36,.08)',
+          border:'1px solid rgba(251,191,36,.3)',borderRadius:'var(--r)'}}>
+          <span style={{fontSize:11,color:'var(--yellow)'}}>
+            ⚠ Pending changes need a restart to take effect.
+          </span>
+          <button onClick={()=>setConfirmRestart(true)}
+            style={{padding:'4px 12px',background:'var(--yellow)',border:'none',borderRadius:'var(--r)',
+              color:'#000',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'var(--font)'}}>
+            Restart Now
+          </button>
         </div>
       )}
 
-      {result&&(
+      {result&&!restartDialog&&(
         <div style={{padding:'10px 14px',marginBottom:16,
           background:result.error?'rgba(239,68,68,.08)':'rgba(74,222,128,.08)',
           border:`1px solid ${result.error?'rgba(239,68,68,.3)':'rgba(74,222,128,.3)'}`,
           borderRadius:'var(--r)',fontSize:11,color:result.error?'var(--red)':'var(--green)'}}>
           {result.error?'❌ '+result.error
-            :result.needs_restart?'✓ Saved — Redis and metrics token applied immediately. Restart required for database / ACME changes.'
-            :'✓ All changes applied immediately — no restart needed.'}
+            :result.hot_applied?.length>0?'✓ Applied immediately: '+result.hot_applied.join(', ')
+            :'✓ Config saved.'}
         </div>
       )}
 
@@ -2400,7 +2501,7 @@ function InfraTab({stats,role}){
             <div>
               {statusRow('Endpoint',metricsUrl,true)}
               {statusRow('Format','text/plain v0.0.4 (Prometheus)',true)}
-              {statusRow('Auth',os.Getenv?'':'Bearer token (METRICS_TOKEN)',true)}
+              {statusRow('Auth','Bearer token via METRICS_TOKEN (optional)',true)}
               <div style={{marginTop:12}}>
                 {lbl('Scrape bearer token','— leave empty to allow unauthenticated scraping','hot')}
                 {inp(form.metrics?.token,v=>set('metrics','token',v),'password','optional-token')}

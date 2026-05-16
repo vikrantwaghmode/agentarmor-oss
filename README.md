@@ -75,7 +75,8 @@ AgentArmor is built around three principles:
 | TLS by Default | — | Transport | Auto-generated self-signed cert on first run; HTTPS on `:8443`, HTTP→HTTPS redirect on `:8080` |
 | SSO / OIDC | — | Auth | Any OIDC provider (Google, Microsoft, Okta, Auth0, Keycloak); role mapping from groups; configurable from the Auth tab without restart |
 | Multi-tenancy | — | Isolate | Per-tenant policies, tokens, audit trails, rate limits, and sessions — routed via `X-Tenant-ID` header or Bearer token; managed from Tenants tab (08) |
-| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; tabs for Auth (SSO), Tenants, Skills, Repave, and all posture settings |
+| Infrastructure Config | — | Config | `infra.yaml` dashboard (tab 10) — configure PostgreSQL, Redis, ACME, metrics token with hot-reload; **Restart System** button with "now or later" dialog |
+| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; 10 tabs covering health, policy, audit, firewall, skills, repave, SSO, tenants, logs, and infrastructure |
 
 ## Quick Start
 
@@ -521,15 +522,48 @@ All patterns use the same Docker image and the same `policy.yaml` schema — you
 
 The security *design* is enterprise-grade. All major infrastructure gaps have been closed.
 
+## Infrastructure Configuration (Dashboard Tab 10)
+
+All infrastructure settings are managed from the **Infrastructure tab (10)** in the dashboard — no shell access or file editing required after initial setup.
+
+| Setting | Hot-reload | How to configure |
+|---|---|---|
+| PostgreSQL URL | No — restart required | Infrastructure tab → Database section |
+| Redis URL | **Yes** — reconnects immediately | Infrastructure tab → Rate Limiting section |
+| ACME domain + email | No — restart required | Infrastructure tab → TLS section |
+| Metrics scrape token | **Yes** — live | Infrastructure tab → Prometheus section |
+
+**Save behaviour:** When you click **Save & Apply**, changes that can be applied immediately take effect without interruption. Settings that need a restart trigger a dialog:
+
+```
+┌──────────────────────────────────────────────────┐
+│  Restart required                                 │
+│                                                   │
+│  • Database (URL changed — needs a fresh start)  │
+│                                                   │
+│  ✓ Already live: Redis rate limiting              │
+│                                                   │
+│  Active sessions will be interrupted briefly.    │
+│  Docker will restart automatically.              │
+│                                                   │
+│            [ Later ]   [ Restart Now ]           │
+└──────────────────────────────────────────────────┘
+```
+
+The **Restart System** button in the tab header lets admins trigger a clean restart at any time. A full-screen spinner tracks the restart and auto-reloads the dashboard when the service is back up.
+
+Configuration is persisted to `infra.yaml` (volume-mounted), so settings survive container rebuilds.
+
 ## High Availability Setup
 
-To run multiple proxy instances sharing state:
+To run multiple proxy instances sharing state, uncomment the `postgres` and `redis` services in `docker-compose.yml`, then set in `infra.yaml` (or `.env`):
 
 ```bash
-# docker-compose.yml — uncomment postgres and redis services, then:
 DATABASE_URL="postgres://agentarmor:secret@postgres:5432/agentarmor?sslmode=disable"
 REDIS_URL="redis://redis:6379"
 ```
+
+Or configure it directly from the **Infrastructure tab** in the dashboard — no file editing needed.
 
 Both are **opt-in** — the default single-container SQLite + in-memory rate limiting requires no changes.
 
@@ -539,6 +573,8 @@ Both are **opt-in** — the default single-container SQLite + in-memory rate lim
 GET https://localhost:8443/armor/metrics
 Authorization: Bearer <METRICS_TOKEN>   # if METRICS_TOKEN is set
 ```
+
+Set `METRICS_TOKEN` from the Infrastructure tab (hot-reloaded, no restart needed).
 
 Prometheus scrape config:
 ```yaml
@@ -559,6 +595,7 @@ Prometheus scrape config:
 - [x] **High availability** — PostgreSQL audit log + Redis distributed rate limiting; proxy is now stateless and horizontally scalable
 - [x] **Prometheus metrics** — `/armor/metrics` endpoint with request counters, scanner rule counts, goroutines, heap usage
 - [x] **Cert auto-renewal** — ACME / Let's Encrypt with HTTP-01 challenge; auto-renews before expiry
+- [x] **Infrastructure dashboard (tab 10)** — configure PostgreSQL, Redis, ACME, and metrics token from the UI; hot-reload where possible; restart dialog ("now or later") for settings that need a container restart; Restart System button with auto-reload
 
 ### Upcoming
 - [ ] **WASM filters** — Custom filtering logic compiled to WASM, loaded at runtime without rebuilding
