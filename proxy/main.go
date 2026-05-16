@@ -2537,6 +2537,14 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
 
 	// GET /armor/api/audit
+	// GET /armor/api/audit/export — download audit log as CSV or NDJSON (admin only)
+	case endpoint == "audit/export" || strings.HasPrefix(endpoint, "audit/export?"):
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		handleAuditExport(w, r)
+
 	case endpoint == "audit" || strings.HasPrefix(endpoint, "audit?"):
 		limit := 100
 		if l := r.URL.Query().Get("limit"); l != "" {

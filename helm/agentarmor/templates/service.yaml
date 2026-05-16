@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentarmor.fullname" . }}
+  labels:
+    {{- include "agentarmor.labels" . | nindent 4 }}
+spec:
+  type: {{ if .Values.sidecar.enabled }}ClusterIP{{ else }}{{ .Values.service.type }}{{ end }}
+  ports:
+    - port: {{ .Values.service.httpsPort }}
+      targetPort: https
+      protocol: TCP
+      name: https
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http-redirect
+      protocol: TCP
+      name: http-redirect
+  selector:
+    {{- include "agentarmor.selectorLabels" . | nindent 4 }}

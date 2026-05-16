@@ -1,0 +1,259 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentarmor.fullname" . }}
+  labels:
+    {{- include "agentarmor.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.ha.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agentarmor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "agentarmor.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "agentarmor.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agentarmor
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: http-redirect
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /armor/api/auth/role
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /armor/api/auth/role
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            # ── Auth ──────────────────────────────────────────────────────────
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentarmor.authSecretName" . }}
+                  key: {{ .Values.auth.adminTokenKey }}
+            - name: USER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentarmor.authSecretName" . }}
+                  key: {{ .Values.auth.userTokenKey }}
+
+            # ── LLM provider ─────────────────────────────────────────────────
+            - name: LLM_PROVIDER
+              value: {{ .Values.llm.provider | quote }}
+            {{- if .Values.llm.openaiApiKey }}
+            - name: OPENAI_API_KEY
+              value: {{ .Values.llm.openaiApiKey | quote }}
+            {{- end }}
+            {{- if .Values.llm.anthropicApiKey }}
+            - name: ANTHROPIC_API_KEY
+              value: {{ .Values.llm.anthropicApiKey | quote }}
+            {{- end }}
+            {{- if .Values.llm.geminiApiKey }}
+            - name: GEMINI_API_KEY
+              value: {{ .Values.llm.geminiApiKey | quote }}
+            {{- end }}
+
+            # ── TLS ───────────────────────────────────────────────────────────
+            {{- if .Values.tls.certSecret }}
+            - name: TLS_CERT
+              value: /certs/tls.crt
+            - name: TLS_KEY
+              value: /certs/tls.key
+            {{- end }}
+            {{- if .Values.tls.acme.enabled }}
+            - name: ACME_DOMAIN
+              value: {{ .Values.tls.acme.domain | quote }}
+            - name: ACME_EMAIL
+              value: {{ .Values.tls.acme.email | quote }}
+            {{- if .Values.tls.acme.staging }}
+            - name: ACME_STAGING
+              value: "true"
+            {{- end }}
+            {{- end }}
+
+            # ── SSO / OIDC ────────────────────────────────────────────────────
+            {{- if .Values.oidc.enabled }}
+            - name: OIDC_ENABLED
+              value: "true"
+            - name: OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-oidc" (include "agentarmor.fullname" .)) .Values.oidc.existingSecret }}
+                  key: oidc-client-secret
+            {{- if .Values.oidc.redirectUrl }}
+            - name: OIDC_REDIRECT_URL
+              value: {{ .Values.oidc.redirectUrl | quote }}
+            {{- end }}
+            {{- if .Values.oidc.adminGroups }}
+            - name: OIDC_ADMIN_GROUPS
+              value: {{ .Values.oidc.adminGroups | quote }}
+            {{- end }}
+            {{- if .Values.oidc.userGroups }}
+            - name: OIDC_USER_GROUPS
+              value: {{ .Values.oidc.userGroups | quote }}
+            {{- end }}
+            {{- end }}
+
+            # ── HA: Database + Redis ──────────────────────────────────────────
+            {{- if .Values.ha.enabled }}
+            - name: DATABASE_URL
+              {{- if .Values.ha.database.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ha.database.existingSecret }}
+                  key: DATABASE_URL
+              {{- else }}
+              value: {{ .Values.ha.database.url | quote }}
+              {{- end }}
+            - name: REDIS_URL
+              {{- if .Values.ha.redis.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ha.redis.existingSecret }}
+                  key: REDIS_URL
+              {{- else }}
+              value: {{ .Values.ha.redis.url | quote }}
+              {{- end }}
+            {{- end }}
+
+            # ── OpenTelemetry ─────────────────────────────────────────────────
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | quote }}
+            {{- if .Values.otel.insecure }}
+            - name: OTEL_INSECURE
+              value: "true"
+            {{- end }}
+            {{- end }}
+
+            # ── Secrets provider ──────────────────────────────────────────────
+            {{- if ne .Values.secrets.provider "env" }}
+            - name: SECRETS_PROVIDER
+              value: {{ .Values.secrets.provider | quote }}
+            {{- if .Values.secrets.vaultAddr }}
+            - name: VAULT_ADDR
+              value: {{ .Values.secrets.vaultAddr | quote }}
+            - name: VAULT_SECRET_PATH
+              value: {{ .Values.secrets.vaultSecretPath | quote }}
+            {{- end }}
+            {{- if .Values.secrets.awsRegion }}
+            - name: AWS_REGION
+              value: {{ .Values.secrets.awsRegion | quote }}
+            - name: AWS_SECRET_NAME
+              value: {{ .Values.secrets.awsSecretName | quote }}
+            {{- end }}
+            {{- if .Values.secrets.gcpProjectId }}
+            - name: GCP_PROJECT_ID
+              value: {{ .Values.secrets.gcpProjectId | quote }}
+            - name: GCP_SECRET_NAME
+              value: {{ .Values.secrets.gcpSecretName | quote }}
+            {{- end }}
+            {{- if .Values.secrets.azureKeyvaultUrl }}
+            - name: AZURE_KEYVAULT_URL
+              value: {{ .Values.secrets.azureKeyvaultUrl | quote }}
+            - name: AZURE_SECRET_NAME
+              value: {{ .Values.secrets.azureSecretName | quote }}
+            {{- end }}
+            {{- end }}
+
+          volumeMounts:
+            # Data volume (SQLite audit log, policy snapshots)
+            {{- if .Values.persistence.data.enabled }}
+            - name: data
+              mountPath: /app/data
+            {{- end }}
+            # Certs volume (TLS certs, ACME cache)
+            {{- if .Values.persistence.certs.enabled }}
+            - name: certs
+              mountPath: /app/certs
+            {{- end }}
+            # BYO TLS cert from k8s secret
+            {{- if .Values.tls.certSecret }}
+            - name: tls-cert
+              mountPath: /certs
+              readOnly: true
+            {{- end }}
+            # Custom policy/firewall ConfigMap
+            {{- if or .Values.policy .Values.firewall }}
+            {{- if .Values.policy }}
+            - name: config
+              mountPath: /app/policy.yaml
+              subPath: policy.yaml
+            {{- end }}
+            {{- if .Values.firewall }}
+            - name: config
+              mountPath: /app/firewall.yaml
+              subPath: firewall.yaml
+            {{- end }}
+            {{- end }}
+
+      volumes:
+        {{- if .Values.persistence.data.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "agentarmor.fullname" . }}-data
+        {{- end }}
+        {{- if .Values.persistence.certs.enabled }}
+        - name: certs
+          persistentVolumeClaim:
+            claimName: {{ include "agentarmor.fullname" . }}-certs
+        {{- end }}
+        {{- if .Values.tls.certSecret }}
+        - name: tls-cert
+          secret:
+            secretName: {{ .Values.tls.certSecret }}
+        {{- end }}
+        {{- if or .Values.policy .Values.firewall }}
+        - name: config
+          configMap:
+            name: {{ include "agentarmor.fullname" . }}-config
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

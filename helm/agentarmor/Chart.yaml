@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agentarmor
+description: Defense-in-depth security proxy for LLM-powered applications
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - ai-security
+  - llm
+  - proxy
+  - oidc
+  - wasm
+home: https://github.com/vikrantwaghmode/agentarmor-oss
+sources:
+  - https://github.com/vikrantwaghmode/agentarmor-oss
+maintainers:
+  - name: vikrantwaghmode
+    email: vikrant.waghmode@gmail.com

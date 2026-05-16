@@ -1,0 +1,17 @@
+{{- if or .Values.policy .Values.firewall }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentarmor.fullname" . }}-config
+  labels:
+    {{- include "agentarmor.labels" . | nindent 4 }}
+data:
+  {{- if .Values.policy }}
+  policy.yaml: |
+    {{- .Values.policy | nindent 4 }}
+  {{- end }}
+  {{- if .Values.firewall }}
+  firewall.yaml: |
+    {{- .Values.firewall | nindent 4 }}
+  {{- end }}
+{{- end }}

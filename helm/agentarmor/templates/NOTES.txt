@@ -1,0 +1,45 @@
+AgentArmor has been deployed.
+
+{{- if .Values.ingress.enabled }}
+
+Dashboard:
+  https://{{ .Values.ingress.host }}/armor/
+
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+Get the external IP:
+  kubectl get svc {{ include "agentarmor.fullname" . }} -n {{ .Release.Namespace }} -w
+
+Then open:
+  https://<EXTERNAL-IP>:{{ .Values.service.httpsPort }}/armor/
+
+{{- else }}
+
+Forward to localhost:
+  kubectl port-forward svc/{{ include "agentarmor.fullname" . }} {{ .Values.service.httpsPort }}:{{ .Values.service.httpsPort }} -n {{ .Release.Namespace }}
+
+Then open:
+  https://localhost:{{ .Values.service.httpsPort }}/armor/
+
+{{- end }}
+
+{{- if .Values.tls.selfSigned }}
+
+⚠  TLS: self-signed certificate (browser warning expected).
+   To use Let's Encrypt: set tls.acme.enabled=true + tls.acme.domain + tls.acme.email
+   To use your own cert: set tls.certSecret=<k8s-tls-secret-name>
+{{- end }}
+
+{{- if .Values.ha.enabled }}
+
+HA mode: enabled
+  Replicas: {{ .Values.ha.autoscaling.minReplicas }}–{{ .Values.ha.autoscaling.maxReplicas }} (HPA)
+  Database: {{ if .Values.ha.database.url }}{{ .Values.ha.database.url | trunc 40 }}...{{ else }}from secret{{ end }}
+  Redis:    {{ if .Values.ha.redis.url }}{{ .Values.ha.redis.url }}{{ else }}from secret{{ end }}
+{{- else }}
+
+HA mode: disabled (single replica, SQLite, in-memory rate limiting)
+  Enable with: --set ha.enabled=true --set ha.database.url=postgres://... --set ha.redis.url=redis://...
+{{- end }}
+
+Docs: https://github.com/vikrantwaghmode/agentarmor-oss

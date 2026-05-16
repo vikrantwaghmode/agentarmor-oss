@@ -14,21 +14,21 @@
 AgentArmor is a **two-layer security proxy** for LLM-powered applications. It sits between your application and any LLM provider, scanning every message and enforcing network-level egress control. Works with any tool — OpenClaw, Cursor, custom apps, raw API clients.
 
 ```text
-┌─────────────┐         ┌──────────────────────────────────────────────────┐        ┌───────────────┐
-│             │         │              AgentArmor Environment              │        │               │
-│ Client Apps │ HTTPS/WS│  ┌────────────────┐     ┌─────────────────────┐  │ Egress │ External LLMs │
-│ (Browser,   ├─────────┼─▶│ AgentArmor     ├────▶│ iptables Firewall   ├──┼───────▶│ (OpenAI,      │
-│ OpenClaw,   │◀────────┼─┤│ Proxy (L7)     │     │ (L3/L4)             │  │◀───────┤ Anthropic,    │
-│ IDE, etc.)  │         │  │ - Scanners     │     │ - Zero-Trust Egress │  │        │ Gemini, etc.) │
-│             │         │  │ - RAG/Skills   │     └─────────────────────┘  │        │               │
-└─────────────┘         │  └─┬──────┬─────┬─┘                              │        └───────────────┘
+┌─────────────┐         ┌──────────────────────────────────────────────────┐      ┌───────────────┐
+│              │        │              AgentArmor Environment              │      │               │
+│ Client Apps  │HTTPS/WS│  ┌────────────────┐     ┌─────────────────────┐  │Egress│ External LLMs │
+│ (Browser,    ├────────┼─▶│ AgentArmor     ├────▶│ iptables Firewall   ├──┼─────▶│ (OpenAI,      │
+│ OpenClaw,    │◀───────┼─│ Proxy (L7)     │     │ (L3/L4)             │  │◀─────┤ Anthropic,    │
+│ IDE, etc.)   │        │  │ - Scanners     │     │ - Zero-Trust Egress │  │      │ Gemini, etc.) │
+│              │        │  │ - RAG/Skills   │     └─────────────────────┘  |      │               │
+└─────────────┘         │  └─┬──────┬─────┬─┘                              │      └───────────────┘
                         │    │      │     │                                │
                         │    ▼      ▼     └──▶ ┌───────────────────────┐   │
                         │ ┌──────┐ ┌─────────┐ │  Web Dashboard & API  │   │
                         │ │Ollama│ │Presidio │ └───────────┬───────────┘   │
                         │ │(LLM) │ │(PII/DLP)│             ▼               │
                         │ └──────┘ └─────────┘ ┌───────────────────────┐   │
-                        │                           │   Audit DB (SQLite)   │   │
+                        │                           │   Audit DB (SQLite)  │   
                         │                      └───────────────────────┘   │
                         └──────────────────────────────────────────────────┘
 ```
@@ -116,6 +116,56 @@ OPENCLAW_GATEWAY_TOKEN="..."
 # CORS — comma-separated list of allowed extra origins (own host always allowed)
 # AGENTARMOR_CORS_ORIGINS="https://your-dashboard.example.com"
 ```
+
+## Kubernetes / Helm
+
+```bash
+# Single replica (dev / staging)
+helm install agentarmor ./helm/agentarmor \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly
+
+# HA mode — PostgreSQL + Redis + HPA (2–10 replicas)
+helm install agentarmor ./helm/agentarmor \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly \
+  --set ha.enabled=true \
+  --set ha.database.url="postgres://agentarmor:secret@pg:5432/agentarmor?sslmode=disable" \
+  --set ha.redis.url="redis://redis:6379"
+
+# Sidecar mode — ClusterIP only, no ingress
+helm install agentarmor ./helm/agentarmor \
+  --set sidecar.enabled=true \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly
+```
+
+See [`helm/agentarmor/values.yaml`](helm/agentarmor/values.yaml) for the full option reference — OIDC, ACME, OTel, all secrets providers, custom policy/firewall ConfigMaps, resource limits, and ingress.
+
+## Kubernetes / Helm
+
+```bash
+# Single replica (dev / staging)
+helm install agentarmor ./helm/agentarmor \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly
+
+# HA mode — PostgreSQL + Redis + HPA (2–10 replicas)
+helm install agentarmor ./helm/agentarmor \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly \
+  --set ha.enabled=true \
+  --set ha.database.url="postgres://agentarmor:secret@pg:5432/agentarmor?sslmode=disable" \
+  --set ha.redis.url="redis://redis:6379"
+
+# Sidecar mode — ClusterIP only, no ingress
+helm install agentarmor ./helm/agentarmor \
+  --set sidecar.enabled=true \
+  --set auth.adminToken=changeme \
+  --set auth.userToken=readonly
+```
+
+See [`helm/agentarmor/values.yaml`](helm/agentarmor/values.yaml) for the full option reference — OIDC, ACME, OTel, all secrets providers, custom policy/firewall ConfigMaps, resource limits, and ingress.
 
 ## Transport Security
 
@@ -624,9 +674,12 @@ Prometheus scrape config:
 - [x] **WASM filters** — Drop `.wasm` files into `./wasm-filters/`; runs after all built-in scanners; WASI stdin/stdout ABI works with Go, Rust, C, AssemblyScript; enable/disable/reload from Infrastructure tab without restart
 - [x] **OpenTelemetry traces** — Minimal OTLP/HTTP emitter (zero new Go deps); one span per HTTP request + scan child span; compatible with Jaeger, Grafana Tempo, Honeycomb, Datadog Agent; `X-Trace-ID` in response headers
 
+- [x] **Helm chart** — `helm/agentarmor/` — values for single, HA (PostgreSQL + Redis + HPA), sidecar, and ACME patterns; supports `existingSecret`, custom policy/firewall ConfigMaps, OIDC, OTel, and all secrets providers
+- [x] **Audit log export** — `⬇ Export` dropdown in the Audit Log tab; CSV or NDJSON; row-limit options (1k / 10k / all rows); active filter preserved; admin-only; streams as a browser download
+
 ### Upcoming
-- [ ] **Helm chart** — Kubernetes-native deployment with values for HA, multi-tenant, and sidecar patterns
-- [ ] **Audit log export** — CSV / NDJSON export from the dashboard for compliance reporting
+- [ ] **Helm OCI registry** — `helm install` directly from `ghcr.io` without cloning
+- [ ] **Audit date-range filter** — `from` / `to` picker in the export dropdown
 
 ## Contributing
 

@@ -1391,10 +1391,82 @@ function Policy({role}){
 }
 
 /* ═══ AUDIT ═══ */
-function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefreshMs}){
+function ExportButton({disabled,setExporting,filterAction,filterDir}){
+  const[open,setOpen]=useState(false);
+  const ref=React.useRef();
+
+  // Close dropdown when clicking outside
+  React.useEffect(()=>{
+    const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener('mousedown',h);
+    return()=>document.removeEventListener('mousedown',h);
+  },[]);
+
+  const doExport=async(format,limit)=>{
+    setOpen(false);setExporting(true);
+    const params=new URLSearchParams({format,limit});
+    if(filterAction&&filterAction!=='ALL')params.set('action',filterAction);
+    try{
+      const resp=await fetch('/armor/api/audit/export?'+params,{
+        headers:{Authorization:'Bearer '+_tok}
+      });
+      if(!resp.ok){alert('Export failed: '+resp.status);return;}
+      const blob=await resp.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;
+      const ts=new Date().toISOString().slice(0,10);
+      a.download=`agentarmor-audit-${ts}.${format==='csv'?'csv':'ndjson'}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }catch(e){alert('Export error: '+e);}
+    setExporting(false);
+  };
+
+  return(
+    <div ref={ref} style={{position:'relative'}}>
+      <button className="pause-btn" disabled={disabled} onClick={()=>setOpen(o=>!o)}>
+        {disabled?'Exporting…':'⬇ Export'}
+      </button>
+      {open&&(
+        <div style={{position:'absolute',right:0,top:'100%',marginTop:4,zIndex:200,
+          background:'var(--s1)',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+          minWidth:180,boxShadow:'0 8px 24px rgba(0,0,0,.4)',overflow:'hidden'}}>
+          <div style={{padding:'6px 10px',fontSize:10,color:'var(--t3)',borderBottom:'1px solid var(--b1)',textTransform:'uppercase',letterSpacing:'.05em'}}>
+            Format &amp; row limit
+          </div>
+          {[
+            ['CSV · last 1,000',  'csv',    1000],
+            ['CSV · last 10,000', 'csv',   10000],
+            ['CSV · all rows',    'csv',   100000],
+            ['NDJSON · last 1,000', 'ndjson', 1000],
+            ['NDJSON · all rows',   'ndjson', 100000],
+          ].map(([label,fmt,lim])=>(
+            <button key={label} onClick={()=>doExport(fmt,lim)}
+              style={{display:'block',width:'100%',padding:'8px 12px',background:'transparent',
+                border:'none',textAlign:'left',fontSize:11,color:'var(--t2)',cursor:'pointer',
+                fontFamily:'var(--font)'}}
+              onMouseEnter={e=>e.target.style.background='var(--bg)'}
+              onMouseLeave={e=>e.target.style.background='transparent'}>
+              {label}
+            </button>
+          ))}
+          {filterAction&&filterAction!=='ALL'&&(
+            <div style={{padding:'6px 10px',fontSize:10,color:'var(--yellow)',borderTop:'1px solid var(--b1)'}}>
+              Filtered to: {filterAction} only
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefreshMs,role}){
   const[q,setQ]=useState('');
   const[f,setF]=useState('ALL');
   const[dir,setDir]=useState('ALL');
+  const[exporting,setExporting]=useState(false);
   const[paused,setPaused]=useState(false);
   const rows=useMemo(()=>{
     let d=events||[];
@@ -1417,12 +1489,13 @@ function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefresh
               <div className="page-meta-row"><span className="page-meta-label">Showing</span><span className="page-meta-val">{rows.length}/{total}</span></div>
               <div className="page-meta-row"><span className="page-meta-label">Retention</span><span className="page-meta-val">last 200</span></div>
             </div>
-            <div style={{display:'flex',gap:6}}>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
               <button className="pause-btn" onClick={onRefresh}>↻ Refresh</button>
               <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
               {autoRefresh&&<select value={refreshMs} onChange={e=>setRefreshMs(+e.target.value)} style={{padding:'3px 6px',border:'1px solid var(--yellow)',borderRadius:'var(--r)',background:'var(--bg)',color:'var(--yellow)',fontSize:10}}>
                 {[[5000,'5s'],[15000,'15s'],[30000,'30s'],[60000,'1m']].map(([v,l])=><option key={v} value={v}>{l}</option>)}
               </select>}
+              {role==='admin'&&<ExportButton disabled={exporting} setExporting={setExporting} filterAction={f} filterDir={dir}/>}
             </div>
           </div>
         </div>
@@ -3127,7 +3200,7 @@ function App(){
       <main className="main" data-screen-label={`${tab} screen`}>
         {tab==='health'   &&<Health   data={data} recentBlocks={recentBlocks}/>}
         {tab==='policy'   &&<Policy   role={role}/>}
-        {tab==='audit'    &&<Audit    events={audit} onRefresh={loadAudit} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} refreshMs={refreshMs} setRefreshMs={setRefreshMs}/>}
+        {tab==='audit'    &&<Audit    events={audit} onRefresh={loadAudit} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} refreshMs={refreshMs} setRefreshMs={setRefreshMs} role={role}/>}
         {tab==='firewall' &&<Firewall fw={fw} audit={audit}/>}
         {tab==='skills'   &&<Skills   data={skillsData} role={role} onSkillsChange={loadSkills}/>}
         {tab==='repave'   &&<Repave   role={role}/>}

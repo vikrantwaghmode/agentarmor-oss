@@ -1,0 +1,156 @@
+# AgentArmor Helm Values
+# Full reference: https://github.com/vikrantwaghmode/agentarmor-oss
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/vikrantwaghmode/agentarmor
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ── Auth tokens (required) ─────────────────────────────────────────────────────
+auth:
+  adminToken: ""           # Full dashboard access
+  userToken: ""            # Read-only dashboard access
+  # Set existingSecret to reference a pre-created k8s Secret instead:
+  existingSecret: ""
+  adminTokenKey: "admin-token"
+  userTokenKey: "user-token"
+
+# ── LLM provider ───────────────────────────────────────────────────────────────
+llm:
+  provider: "openclaw"     # openclaw | openai | anthropic | gemini
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  geminiApiKey: ""
+  openclawGatewayToken: ""
+  existingSecret: ""       # pre-created secret with the keys above
+
+# ── TLS ────────────────────────────────────────────────────────────────────────
+tls:
+  # Option A: auto-generated self-signed cert (default, dev only)
+  selfSigned: true
+  # Option B: bring your own cert — set selfSigned: false and reference a TLS secret
+  certSecret: ""           # k8s secret with tls.crt + tls.key
+  # Option C: Let's Encrypt ACME (requires public domain + port 80)
+  acme:
+    enabled: false
+    domain: ""
+    email: ""
+    staging: false
+
+# ── SSO / OIDC (optional) ──────────────────────────────────────────────────────
+oidc:
+  enabled: false
+  issuer: ""               # e.g. https://accounts.google.com
+  clientId: ""
+  clientSecret: ""
+  redirectUrl: ""          # e.g. https://proxy.example.com/armor/callback
+  adminGroups: ""
+  userGroups: ""
+  existingSecret: ""       # pre-created secret with oidc-client-secret key
+
+# ── High-Availability mode (Pattern 3) ─────────────────────────────────────────
+# When enabled: uses external PostgreSQL + Redis, enables HPA
+ha:
+  enabled: false
+  database:
+    url: ""                # postgres://user:pass@host:5432/agentarmor?sslmode=disable
+    existingSecret: ""     # secret with DATABASE_URL key
+  redis:
+    url: ""                # redis://host:6379
+    existingSecret: ""     # secret with REDIS_URL key
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# ── Sidecar mode (Pattern 4) ───────────────────────────────────────────────────
+# When enabled: ClusterIP only, no ingress, reduced resource footprint
+sidecar:
+  enabled: false
+
+# ── Secrets provider ───────────────────────────────────────────────────────────
+secrets:
+  provider: env            # env | vault | aws | gcp | azure
+  # Vault
+  vaultAddr: ""
+  vaultSecretPath: ""
+  vaultRoleId: ""
+  vaultSecretId: ""
+  # AWS
+  awsRegion: ""
+  awsSecretName: ""
+  # GCP
+  gcpProjectId: ""
+  gcpSecretName: ""
+  # Azure
+  azureKeyvaultUrl: ""
+  azureSecretName: ""
+
+# ── OpenTelemetry ──────────────────────────────────────────────────────────────
+otel:
+  enabled: false
+  endpoint: ""             # e.g. http://jaeger:4318
+  serviceName: "agentarmor"
+  insecure: false
+
+# ── Ingress ────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  host: ""                 # e.g. proxy.example.com
+  tls: []
+
+# ── Service ────────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP          # ClusterIP | LoadBalancer | NodePort
+  httpsPort: 8443
+  httpPort: 8080
+
+# ── Persistence ────────────────────────────────────────────────────────────────
+persistence:
+  data:
+    enabled: true
+    storageClass: ""
+    size: 5Gi              # SQLite audit log + snapshots
+    accessMode: ReadWriteOnce
+  certs:
+    enabled: true
+    storageClass: ""
+    size: 100Mi            # TLS certs + ACME cache
+    accessMode: ReadWriteOnce
+
+# ── Policy and firewall (ConfigMap-injected) ───────────────────────────────────
+# Leave empty to use the built-in defaults baked into the image.
+policy: ""                 # full content of policy.yaml
+firewall: ""               # full content of firewall.yaml
+
+# ── Resources ──────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# ── Pod settings ───────────────────────────────────────────────────────────────
+podAnnotations: {}
+podSecurityContext: {}
+securityContext:
+  capabilities:
+    add: ["NET_ADMIN"]     # required for iptables egress firewall
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+nameOverride: ""
+fullnameOverride: ""
