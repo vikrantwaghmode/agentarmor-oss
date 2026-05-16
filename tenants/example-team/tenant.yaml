@@ -1,0 +1,5 @@
+id: example-team
+name: "Example Team"
+admin_token: "tenantadmin"
+user_token: "tenantuser"
+created_at: "2026-05-11T00:00:00Z"

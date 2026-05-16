@@ -640,10 +640,3 @@ func tokenise(text string) map[string]int {
 	}
 	return counts
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

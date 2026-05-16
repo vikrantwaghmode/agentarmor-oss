@@ -1154,6 +1154,13 @@ func migrateAuditDB() {
 			log.Println("✅ Database schema migrated: added 'session_key' column.")
 		}
 	}
+	if !columns["tenant_id"] {
+		if _, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN tenant_id TEXT DEFAULT 'default'`); err != nil {
+			log.Printf("⚠️  Failed to add 'tenant_id' column to audit_logs: %v", err)
+		} else {
+			log.Println("✅ Database schema migrated: added 'tenant_id' column.")
+		}
+	}
 }
 
 // ── Policy Snapshots (Repave — known-good restore points) ──
@@ -1970,15 +1977,17 @@ func scanWithLLM(content, baseURL, model string, threshold float64, timeoutMs in
 
 // direction is "Request" (user→AI) or "Response" (AI→user).
 // sessionKey is a unique identifier for the client (e.g., auth token or IP) for stateful analysis.
-func scanPayload(payload string, direction string, sessionKey string) ScanResult {
+// scanPayload inspects a single message payload against all active scanners.
+// tnt identifies which tenant's policy, session state, and rate limits to use.
+// Pass defaultTenant (or nil) for single-tenant / backward-compat behaviour.
+func scanPayload(payload string, direction string, sessionKey string, tnt *Tenant) ScanResult {
+	if tnt == nil {
+		tnt = defaultTenant
+	}
 	result := ScanResult{Payload: payload}
 
-	// --- Content Extraction ---
-	// The UI sends a JSON frame. We need to extract the actual user content to scan it.
-	// If it's not a UI frame (e.g., a direct API call), contentToScan will be the original payload.
 	contentToScan := payload
 	isUIFrame := false
-	// Use a generic map to avoid dropping fields from complex frames like those from OpenClaw.
 	var requestFrame map[string]interface{}
 
 	if direction == "Request" {
@@ -2625,6 +2634,83 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 
+	// ── Multi-Tenancy endpoints ──────────────────────────────────────
+
+	// GET /armor/api/tenants — list all tenants (super-admin via global ADMIN_TOKEN only)
+	case endpoint == "tenants" && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(ListTenants())
+
+	// POST /armor/api/tenants — create a new tenant
+	case endpoint == "tenants" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var meta TenantMeta
+		if err := json.NewDecoder(r.Body).Decode(&meta); err != nil || meta.ID == "" {
+			http.Error(w, `{"error":"id is required"}`, http.StatusBadRequest)
+			return
+		}
+		if meta.AdminToken == "" {
+			meta.AdminToken = generateToken()
+		}
+		if meta.UserToken == "" {
+			meta.UserToken = generateToken()
+		}
+		tntNew, err := CreateTenant(meta)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusConflict)
+			return
+		}
+		// Return tokens once — they won't be shown again
+		json.NewEncoder(w).Encode(tntNew.Meta)
+
+	// DELETE /armor/api/tenants/<id> — remove a tenant
+	case strings.HasPrefix(endpoint, "tenants/") && r.Method == http.MethodDelete:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		id := strings.TrimPrefix(endpoint, "tenants/")
+		if err := DeleteTenant(id); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
+	// GET /armor/api/tenants/<id>/policy
+	case strings.HasPrefix(endpoint, "tenants/") && strings.HasSuffix(endpoint, "/policy") && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(endpoint, "tenants/"), "/policy")
+		data, err := GetTenantPolicy(id)
+		if err != nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write(data)
+
+	// POST /armor/api/tenants/<id>/policy — save tenant's policy
+	case strings.HasPrefix(endpoint, "tenants/") && strings.HasSuffix(endpoint, "/policy") && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(endpoint, "tenants/"), "/policy")
+		body, _ := io.ReadAll(r.Body)
+		if err := SaveTenantPolicy(id, body); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
 	// GET /armor/api/skills
 	case endpoint == "skills" && r.Method == http.MethodGet:
 		policyLock.RLock()
@@ -2966,6 +3052,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 	defer clientConn.Close()
 
 	sessionKey := getSessionKey(r)
+	tnt := resolveTenant(r)
 
 	// Register for kill-switch tracking
 	registerWSConn(sessionKey, clientConn)
@@ -3029,7 +3116,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 			// Only scan text frames; binary frames pass through
 			if msgType == websocket.TextMessage {
 				payload := string(msg)
-				result := scanPayload(payload, "Request", sessionKey)
+				result := scanPayload(payload, "Request", sessionKey, tnt)
 
 				if result.Blocked {
 					logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "BLOCKED", result.RuleMatched, payload)
@@ -3105,7 +3192,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 				payload := string(msg)
 				// For responses, a session key is less critical for current rules,
 				// but we pass it for consistency.
-				result := scanPayload(payload, "Response", sessionKey)
+				result := scanPayload(payload, "Response", sessionKey, tnt)
 
 				if result.Redacted {
 					logAuditEvent(r.RemoteAddr, sessionKey, "WS-Response", "REDACTED", result.RuleMatched, payload)
@@ -3132,6 +3219,7 @@ func isWebSocketUpgrade(r *http.Request) bool {
 // handleRoot is the main request handler, routing between WebSocket and HTTP.
 func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, target *url.URL) {
 	sessionKey := getSessionKey(r)
+	tnt := resolveTenant(r)
 
 	// ──── Rate Limiting ────
 	if !checkRateLimit(sessionKey) || !checkIPRateLimit(r) {
@@ -3154,7 +3242,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 		bodyBytes, _ := io.ReadAll(r.Body)
 		payload := string(bodyBytes)
 
-		result := scanPayload(payload, "Request", sessionKey)
+		result := scanPayload(payload, "Request", sessionKey, tnt)
 
 		if result.Blocked {
 			logAuditEvent(r.RemoteAddr, sessionKey, "Request", "BLOCKED", result.RuleMatched, payload)
@@ -3416,6 +3504,7 @@ func main() {
 	}
 
 	initAuditDB()
+	InitTenants() // must run after initAuditDB so tenant handlers have the DB
 	loadPolicy()
 	go watchPolicyFile()
 	go cleanupSessionHistory()

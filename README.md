@@ -3,7 +3,7 @@
 </p>
 <p align="center">
   <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
-  <img src="https://img.shields.io/badge/go-1.25-00ADD8?style=flat-square&logo=go" alt="Go">
+  <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker" alt="Docker">
   <img src="https://img.shields.io/badge/layer_7-proxy-8B5CF6?style=flat-square" alt="L7">
   <img src="https://img.shields.io/badge/layer_3/4-firewall-EF4444?style=flat-square" alt="L3/4">
@@ -73,8 +73,9 @@ AgentArmor is built around three principles:
 | Custom Redaction | — | Config | Per-rule strategies: replace with label, SHA-256 hash, mask prefix/suffix, or remove entirely |
 | Multi-turn Scanning | In | All | All non-system messages scanned, not just the first — covers full conversation history |
 | TLS by Default | — | Transport | Auto-generated self-signed cert on first run; HTTPS on `:8443`, HTTP→HTTPS redirect on `:8080` |
-| SSO / OIDC | — | Auth | Any OIDC provider (Google, Microsoft, Okta, Auth0, Keycloak); role mapping from groups; configurable from the Auth tab |
-| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC, Auth tab for SSO config, all posture settings editable |
+| SSO / OIDC | — | Auth | Any OIDC provider (Google, Microsoft, Okta, Auth0, Keycloak); role mapping from groups; configurable from the Auth tab without restart |
+| Multi-tenancy | — | Isolate | Per-tenant policies, tokens, audit trails, rate limits, and sessions — routed via `X-Tenant-ID` header or Bearer token; managed from Tenants tab (08) |
+| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; tabs for Auth (SSO), Tenants, Skills, Repave, and all posture settings |
 
 ## Quick Start
 
@@ -266,12 +267,16 @@ Both fail gracefully — proxy falls back to regex scanners if unreachable.
 ```
 agentarmor-oss/
 ├── proxy/
-│   ├── main.go          # All scanners, WS handler, API endpoints, repave features
+│   ├── main.go          # Scanners, WS handler, API endpoints, repave features
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
-│   ├── dashboard.html   # Editorial Terminal UI (React, embedded)
+│   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
+│   ├── tenants.go       # Multi-tenancy — Tenant struct, CRUD, token resolution
+│   ├── dashboard.html   # Editorial Terminal UI (React, embedded via go:embed)
 │   └── policy.yaml      # Embedded default policy (go:embed)
-├── skills/              # Built-in skill definitions (volume-mounted)
+├── skills/              # Built-in skill definitions (volume-mounted for live edits)
 │   └── <id>/skill.yaml + knowledge/*.md
+├── tenants/             # Per-tenant configs — create from dashboard or by hand
+│   └── <id>/tenant.yaml + policy.yaml
 ├── certs/               # TLS certificates — auto-generated if empty; replace for production
 │   ├── server.crt
 │   └── server.key
@@ -294,21 +299,26 @@ agentarmor-oss/
 | Graceful config validation | ✅ | Invalid regex skipped with warning; bad YAML keeps previous policy active |
 | Multi-turn conversation scanning | ✅ | All non-system messages scanned, not just the first |
 | IP-level rate limiting | ✅ | Session key + client IP (X-Forwarded-For aware) token bucket |
-| **SSO / OIDC** | ✅ | Google, Microsoft, Okta, Auth0, Keycloak — configurable from the Auth tab (07) without restart |
-| **Multi-tenancy** | ❌ | Single policy for all traffic — no per-team isolation |
+| **SSO / OIDC** | ✅ | Google, Microsoft, Okta, Auth0, Keycloak — configurable from Auth tab (07) without restart |
+| **Multi-tenancy** | ✅ | Per-tenant policies, tokens, audit trails, rate limits — routed via `X-Tenant-ID` header or Bearer token; managed from Tenants tab (08) |
 | **High availability** | ❌ | Single container + SQLite — no clustering or shared state |
 | **Prometheus metrics** | ❌ | No `/metrics` endpoint for Grafana/Datadog |
 | **Secrets vault** | ❌ | API keys in env vars — no Vault/KMS integration |
 | **Cert auto-renewal** | ❌ | No ACME/Let's Encrypt — manual rotation |
 
-The security *design* is enterprise-grade. Gaps 1–3 (SSO, multi-tenancy, HA) are the blockers for large-scale enterprise deployment.
+The security *design* is enterprise-grade. The primary remaining blockers for large-scale deployment are HA and Prometheus metrics.
 
 ## Roadmap
 
-- [ ] **SSO / OIDC** — Okta, Azure AD, Google Workspace integration to replace static tokens
-- [ ] **Multi-tenancy** — Isolated policies, audit logs, and rate limits per application or team
+### Recently shipped
+- [x] **SSO / OIDC** — Google, Microsoft, Okta, Auth0, Keycloak; live-configurable from the Auth tab without restart
+- [x] **Multi-tenancy** — Isolated policies, tokens, audit logs, and rate limits per team/application; routed via `X-Tenant-ID` header or Bearer token
+
+### Upcoming
 - [ ] **High availability** — PostgreSQL audit log, Redis rate-limiter state, horizontal scaling
 - [ ] **Prometheus metrics** — `/metrics` endpoint for Grafana / Datadog
+- [ ] **Cert auto-renewal** — ACME / Let's Encrypt integration
+- [ ] **Secrets vault** — Vault / KMS integration for API key storage
 - [ ] **WASM filters** — Custom filtering logic without recompiling
 
 ## Contributing

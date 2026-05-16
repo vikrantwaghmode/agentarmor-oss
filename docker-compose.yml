@@ -24,6 +24,7 @@ services:
       - ./policy.yaml:/app/policy.yaml  # Live-reloadable policy
       - ./firewall.yaml:/app/firewall.yaml
       - ./certs:/app/certs              # TLS certs — auto-generated if empty, replace for production
+      - ./tenants:/app/tenants          # Per-tenant configs — created from dashboard or by hand
       - ./skills:/app/skills            # Live-editable skill definitions + RAG docs
     restart: unless-stopped
     env_file:

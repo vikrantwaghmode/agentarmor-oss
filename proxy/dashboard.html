@@ -1595,7 +1595,7 @@ function CmdK({open,onClose,onNavigate}){
       {icon:'⊞',label:'Firewall',sub:'04',fn:()=>nav('firewall')},
       {icon:'🎓',label:'Skills',sub:'05',fn:()=>nav('skills')},
       {icon:'↻',label:'Repave',sub:'06',fn:()=>nav('repave')},
-      {icon:'📄',label:'Logs',sub:'07',fn:()=>nav('logs')},
+      {icon:'📄',label:'Logs',sub:'09',fn:()=>nav('logs')},
     ]},
   ];
   const ql=q.toLowerCase();
@@ -2186,6 +2186,178 @@ function AuthSettings({role}){
 }
 
 
+/* ═══ TENANTS TAB ═══ */
+function TenantsTab({role}){
+  const isAdmin=role==='admin';
+  const[tenants,setTenants]=useState(null);
+  const[creating,setCreating]=useState(false);
+  const[newID,setNewID]=useState('');
+  const[newName,setNewName]=useState('');
+  const[created,setCreated]=useState(null);
+  const[deleting,setDeleting]=useState(null);
+  const[selected,setSelected]=useState(null);
+  const[policy,setPolicy]=useState('');
+  const[savingPol,setSavingPol]=useState(false);
+
+  const load=()=>api('tenants').then(r=>r.json()).then(d=>setTenants(Array.isArray(d)?d:[])).catch(()=>setTenants([]));
+  useEffect(()=>{load();},[]);
+
+  const create=async()=>{
+    if(!newID.trim())return;
+    setCreating(true);
+    try{
+      const r=await api('tenants',{method:'POST',body:JSON.stringify({id:newID.trim(),name:newName.trim()||newID.trim()})});
+      const d=await r.json();
+      if(d.error){alert(d.error);return;}
+      setCreated(d);setNewID('');setNewName('');load();
+    }catch(e){alert(String(e));}
+    setCreating(false);
+  };
+
+  const del=async(id)=>{
+    if(!confirm('Delete tenant "'+id+'"? This removes all their config and kills active sessions.'))return;
+    setDeleting(id);
+    await api('tenants/'+id,{method:'DELETE'});
+    setDeleting(null);load();
+    if(selected===id)setSelected(null);
+  };
+
+  const loadPolicy=async(id)=>{
+    setSelected(id);
+    const r=await fetch('/armor/api/tenants/'+id+'/policy',{headers:{Authorization:'Bearer '+_tok}});
+    setPolicy(await r.text());
+  };
+
+  const savePolicy=async()=>{
+    setSavingPol(true);
+    await api('tenants/'+selected+'/policy',{method:'POST',body:policy,headers:{'Content-Type':'application/yaml'}});
+    setSavingPol(false);
+  };
+
+  return(
+    <div style={{maxWidth:900,margin:'0 auto',padding:24}}>
+      <div className="page-label"><span className="page-label-dot"/><span>Tenants</span><span>·</span><span>Multi-Tenancy</span></div>
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24}}>
+        <h1 className="page-headline">Isolated policies, tokens,<br/>and audit trails per <span className="accent">team</span>.</h1>
+        <div className="page-meta">
+          <div className="page-meta-row"><span className="page-meta-label">Mode</span>
+            <span className="page-meta-val" style={{color:'var(--green)'}}>{tenants&&tenants.length>0?'Multi-tenant active':'Single-tenant'}</span>
+          </div>
+          <div className="page-meta-row"><span className="page-meta-label">Tenants</span><span className="page-meta-val">{tenants?.length??'—'}</span></div>
+        </div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'280px 1fr',gap:16,alignItems:'start'}}>
+
+        {/* Left — tenant list + create */}
+        <div>
+          {/* Create form */}
+          {isAdmin&&(
+            <div style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:14,background:'var(--s1)',marginBottom:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',marginBottom:10}}>New Tenant</div>
+              <input value={newID} onChange={e=>setNewID(e.target.value)} placeholder="ID (slug, e.g. team-alpha)"
+                style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                  borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none',marginBottom:6,boxSizing:'border-box'}}
+                onFocus={e=>e.target.style.borderColor='var(--purple)'}
+                onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+              <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Display name (optional)"
+                style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                  borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,outline:'none',marginBottom:8,boxSizing:'border-box'}}
+                onFocus={e=>e.target.style.borderColor='var(--purple)'}
+                onBlur={e=>e.target.style.borderColor='var(--b2)'}
+                onKeyDown={e=>e.key==='Enter'&&create()}/>
+              <button onClick={create} disabled={creating||!newID.trim()}
+                style={{width:'100%',padding:'6px',background:'var(--purple)',color:'#fff',border:'none',
+                  borderRadius:'var(--r)',fontSize:12,fontWeight:600,cursor:'pointer',opacity:newID.trim()?1:.5}}>
+                {creating?'Creating…':'+ Create tenant'}
+              </button>
+            </div>
+          )}
+
+          {/* Tenant list */}
+          {!tenants?<div className="empty loading">Loading…</div>
+          :!tenants.length?<div style={{fontSize:11,color:'var(--t3)',padding:'12px 0'}}>No tenants yet. Each tenant gets isolated policies, tokens, sessions, and audit log.</div>
+          :<div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden'}}>
+            {tenants.map(t=>(
+              <div key={t.id} onClick={()=>loadPolicy(t.id)}
+                style={{padding:'10px 12px',borderBottom:'1px solid var(--b1)',cursor:'pointer',
+                  background:selected===t.id?'var(--purple-d)':'',transition:'background .12s'}}
+                onMouseEnter={e=>{if(selected!==t.id)e.currentTarget.style.background='var(--s2)'}}
+                onMouseLeave={e=>{if(selected!==t.id)e.currentTarget.style.background=''}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:selected===t.id?'var(--purple)':'var(--t1)'}}>{t.name||t.id}</div>
+                    <div style={{fontSize:10,color:'var(--t3)',fontFamily:'monospace'}}>{t.id}</div>
+                  </div>
+                  {isAdmin&&<button onClick={ev=>{ev.stopPropagation();del(t.id);}} disabled={deleting===t.id}
+                    style={{fontSize:10,color:'var(--t3)',padding:'2px 6px',border:'1px solid var(--b2)',
+                      borderRadius:'var(--r)',background:'transparent',cursor:'pointer'}}
+                    onMouseEnter={e=>{e.target.style.borderColor='var(--red)';e.target.style.color='var(--red)';}}
+                    onMouseLeave={e=>{e.target.style.borderColor='var(--b2)';e.target.style.color='var(--t3)';}}>
+                    {deleting===t.id?'…':'✕'}
+                  </button>}
+                </div>
+              </div>
+            ))}
+          </div>}
+        </div>
+
+        {/* Right — policy editor */}
+        <div>
+          {created&&(
+            <div style={{padding:14,border:'1px solid rgba(34,197,94,.35)',borderRadius:'var(--r)',
+              background:'var(--green-d)',marginBottom:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:'var(--green)',marginBottom:8}}>✓ Tenant created — save these tokens now</div>
+              <div style={{fontSize:11,fontFamily:'monospace',color:'var(--t2)',lineHeight:1.8}}>
+                <div><span style={{color:'var(--t3)'}}>Admin token: </span>{created.admin_token}</div>
+                <div><span style={{color:'var(--t3)'}}>User token:  </span>{created.user_token}</div>
+                <div style={{marginTop:6,color:'var(--t3)'}}>Header: <code>X-Tenant-ID: {created.id}</code></div>
+              </div>
+              <button onClick={()=>setCreated(null)}
+                style={{marginTop:8,fontSize:10,color:'var(--t3)',padding:'2px 8px',border:'1px solid var(--b2)',
+                  borderRadius:'var(--r)',background:'transparent',cursor:'pointer'}}>Dismiss</button>
+            </div>
+          )}
+
+          {selected?(
+            <div>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                <div style={{fontSize:12,fontWeight:700,color:'var(--t1)'}}>Policy — {selected}</div>
+                {isAdmin&&<button onClick={savePolicy} disabled={savingPol}
+                  style={{padding:'4px 12px',background:'var(--purple)',color:'#fff',border:'none',
+                    borderRadius:'var(--r)',fontSize:11,fontWeight:600,cursor:'pointer'}}>
+                  {savingPol?'Saving…':'Save'}
+                </button>}
+              </div>
+              <textarea value={policy} onChange={e=>setPolicy(e.target.value)} readOnly={!isAdmin}
+                style={{width:'100%',height:'calc(100vh - 320px)',padding:'10px 12px',
+                  background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+                  color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',resize:'vertical',outline:'none',
+                  boxSizing:'border-box',lineHeight:1.6}}
+                onFocus={e=>e.target.style.borderColor='var(--purple)'}
+                onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+              <div style={{marginTop:6,fontSize:10,color:'var(--t3)'}}>
+                Changes save to <code>tenants/{selected}/policy.yaml</code> and hot-reload immediately.
+              </div>
+            </div>
+          ):(
+            <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:200,color:'var(--t3)',fontSize:12}}>
+              ← Select a tenant to view or edit its policy
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* How-to note */}
+      <div style={{marginTop:20,padding:14,border:'1px solid var(--b1)',borderRadius:'var(--r)',background:'var(--s2)',fontSize:11,color:'var(--t3)',lineHeight:1.7}}>
+        <b style={{color:'var(--t2)'}}>How tenants are identified:</b> send <code>X-Tenant-ID: &lt;id&gt;</code> header, <em>or</em> the tenant's own Bearer token — the proxy automatically routes to the right policy, sessions, and rate limits.
+        Tenant configs live in <code>tenants/&lt;id&gt;/</code> and are isolated from each other and the default policy.
+      </div>
+    </div>
+  );
+}
+
+
 /* ═══ AUTH ═══ */
 /* ── Provider-branded SSO button ── */
 const SSO_ICONS = {
@@ -2328,7 +2500,8 @@ function App(){
     {id:'skills',   num:'05',label:'Skills',   count:skillsData?.skills?.length},
     {id:'repave',   num:'06',label:'Repave'},
     {id:'auth',     num:'07',label:'Auth'},
-    {id:'logs',     num:'07',label:'Logs'},
+    {id:'tenants',  num:'08',label:'Tenants'},
+    {id:'logs',     num:'09',label:'Logs'},
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -2392,6 +2565,7 @@ function App(){
         {tab==='skills'   &&<Skills   data={skillsData} role={role} onSkillsChange={loadSkills}/>}
         {tab==='repave'   &&<Repave   role={role}/>}
         {tab==='auth'     &&<AuthSettings role={role}/>}
+        {tab==='tenants'  &&<TenantsTab role={role}/>}
         {tab==='logs'     &&<Logs     role={role}/>}
       </main>
 
