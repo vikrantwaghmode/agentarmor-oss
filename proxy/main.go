@@ -29,6 +29,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/websocket"
+	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 	"gopkg.in/yaml.v3"
 )
@@ -1063,6 +1064,11 @@ func checkRateLimit(sessionKey string) bool {
 		rateLimiterLock.Unlock()
 	}
 
+	// Redis-backed distributed rate limiting (when REDIS_URL is set)
+	if redisEnabled {
+		return checkRateLimitRedis(sessionKey, cfg.RequestsPerMinute)
+	}
+
 	return limiter.Allow()
 }
 
@@ -1070,52 +1076,100 @@ func checkRateLimit(sessionKey string) bool {
 // Audit Database
 // ──────────────────────────────────────────────
 
-var db *sql.DB
+var (
+	db       *sql.DB
+	dbDriver = "sqlite3"
+)
+
+// ph returns the correct SQL placeholder for the active driver.
+// SQLite uses positional "?" while PostgreSQL uses "$1", "$2", ...
+func ph(i int) string {
+	if dbDriver == "postgres" {
+		return fmt.Sprintf("$%d", i)
+	}
+	return "?"
+}
 
 func initAuditDB() {
 	var err error
-	dbPath := "./data/audit.db"
-	os.MkdirAll(filepath.Dir(dbPath), os.ModePerm)
-	// Use WAL mode for better write concurrency, which is good for logging.
-	db, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		log.Fatal("Error opening database:", err)
+
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		// ── PostgreSQL ───────────────────────────────────────────────────────
+		dbDriver = "postgres"
+		db, err = sql.Open("postgres", dsn)
+		if err != nil {
+			log.Fatalf("❌ PostgreSQL open: %v", err)
+		}
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		if err = db.Ping(); err != nil {
+			log.Fatalf("❌ PostgreSQL ping: %v", err)
+		}
+
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS audit_logs (
+			id            BIGSERIAL PRIMARY KEY,
+			timestamp     TIMESTAMP DEFAULT NOW(),
+			client_ip     TEXT,
+			session_key   TEXT,
+			direction     TEXT,
+			action        TEXT,
+			rule_matched  TEXT,
+			payload_snippet TEXT,
+			tenant_id     TEXT DEFAULT 'default'
+		)`); err != nil {
+			log.Fatalf("❌ PostgreSQL create audit_logs: %v", err)
+		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS policy_snapshots (
+			id        BIGSERIAL PRIMARY KEY,
+			timestamp TIMESTAMP DEFAULT NOW(),
+			label     TEXT,
+			yaml      TEXT NOT NULL
+		)`); err != nil {
+			log.Fatalf("❌ PostgreSQL create policy_snapshots: %v", err)
+		}
+		log.Printf("✅ Audit database initialised (PostgreSQL)")
+	} else {
+		// ── SQLite (default) ─────────────────────────────────────────────────
+		dbPath := "./data/audit.db"
+		os.MkdirAll(filepath.Dir(dbPath), os.ModePerm)
+		db, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+		if err != nil {
+			log.Fatal("Error opening database:", err)
+		}
+
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS audit_logs (
+			"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+			"timestamp" DATETIME DEFAULT CURRENT_TIMESTAMP,
+			"client_ip" TEXT,
+			"session_key" TEXT,
+			"direction" TEXT,
+			"action" TEXT,
+			"rule_matched" TEXT,
+			"payload_snippet" TEXT
+		)`); err != nil {
+			log.Fatal("Error creating audit_logs table:", err)
+		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS policy_snapshots (
+			"id"        INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+			"timestamp" DATETIME DEFAULT CURRENT_TIMESTAMP,
+			"label"     TEXT,
+			"yaml"      TEXT NOT NULL
+		)`); err != nil {
+			log.Fatal("Error creating policy_snapshots table:", err)
+		}
+
+		migrateAuditDB()
+		log.Println("✅ Audit database initialized (SQLite / audit.db)")
 	}
-
-	// Create table if it doesn't exist
-	createTableSQL := `CREATE TABLE IF NOT EXISTS audit_logs (
-		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-		"timestamp" DATETIME DEFAULT CURRENT_TIMESTAMP,
-		"client_ip" TEXT,
-		"session_key" TEXT,
-		"direction" TEXT,
-		"action" TEXT,
-		"rule_matched" TEXT,
-		"payload_snippet" TEXT
-	);`
-	if _, err = db.Exec(createTableSQL); err != nil {
-		log.Fatal("Error creating audit_logs table:", err)
-	}
-
-	// Policy snapshots table (Repave — known-good restore points)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS policy_snapshots (
-		"id"        INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-		"timestamp" DATETIME DEFAULT CURRENT_TIMESTAMP,
-		"label"     TEXT,
-		"yaml"      TEXT NOT NULL
-	)`)
-	if err != nil {
-		log.Fatal("Error creating policy_snapshots table:", err)
-	}
-
-	// Add new columns to existing tables for backward compatibility
-	migrateAuditDB()
-
-	log.Println("✅ Audit database initialized (audit.db)")
 }
 
-// migrateAuditDB checks for and adds missing columns to the audit_logs table.
+// migrateAuditDB adds missing columns to audit_logs for existing SQLite installs.
+// Skipped for PostgreSQL — the CREATE TABLE already includes all columns.
 func migrateAuditDB() {
+	if dbDriver == "postgres" {
+		return
+	}
+
 	rows, err := db.Query("PRAGMA table_info(audit_logs)")
 	if err != nil {
 		log.Printf("⚠️  Could not query audit_logs table info for migration: %v", err)
@@ -1125,14 +1179,11 @@ func migrateAuditDB() {
 
 	columns := make(map[string]bool)
 	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			ctype      string
-			notnull    bool
-			dflt_value sql.NullString
-			pk         int
-		)
+		var cid int
+		var name, ctype string
+		var notnull bool
+		var dflt_value sql.NullString
+		var pk int
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt_value, &pk); err != nil {
 			log.Printf("⚠️  Could not scan audit_logs table info row: %v", err)
 			return
@@ -1140,25 +1191,17 @@ func migrateAuditDB() {
 		columns[name] = true
 	}
 
-	if !columns["client_ip"] {
-		if _, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN client_ip TEXT`); err != nil {
-			log.Printf("⚠️  Failed to add 'client_ip' column to audit_logs: %v", err)
-		} else {
-			log.Println("✅ Database schema migrated: added 'client_ip' column.")
-		}
-	}
-	if !columns["session_key"] {
-		if _, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN session_key TEXT`); err != nil {
-			log.Printf("⚠️  Failed to add 'session_key' column to audit_logs: %v", err)
-		} else {
-			log.Println("✅ Database schema migrated: added 'session_key' column.")
-		}
-	}
-	if !columns["tenant_id"] {
-		if _, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN tenant_id TEXT DEFAULT 'default'`); err != nil {
-			log.Printf("⚠️  Failed to add 'tenant_id' column to audit_logs: %v", err)
-		} else {
-			log.Println("✅ Database schema migrated: added 'tenant_id' column.")
+	for _, col := range []struct{ name, def string }{
+		{"client_ip", "TEXT"},
+		{"session_key", "TEXT"},
+		{"tenant_id", "TEXT DEFAULT 'default'"},
+	} {
+		if !columns[col.name] {
+			if _, err := db.Exec(`ALTER TABLE audit_logs ADD COLUMN ` + col.name + ` ` + col.def); err != nil {
+				log.Printf("⚠️  Failed to add %q column to audit_logs: %v", col.name, err)
+			} else {
+				log.Printf("✅ Database schema migrated: added %q column.", col.name)
+			}
 		}
 	}
 }
@@ -1177,7 +1220,7 @@ func saveSnapshot(label string) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`INSERT INTO policy_snapshots (label, yaml) VALUES (?, ?)`, label, string(data))
+	_, err = db.Exec(`INSERT INTO policy_snapshots (label, yaml) VALUES (`+ph(1)+`,`+ph(2)+`)`, label, string(data))
 	return err
 }
 
@@ -1201,7 +1244,7 @@ func listSnapshots() ([]PolicySnapshot, error) {
 // picks it up and hot-reloads within seconds.
 func restoreSnapshot(id int) error {
 	var yaml string
-	err := db.QueryRow(`SELECT yaml FROM policy_snapshots WHERE id = ?`, id).Scan(&yaml)
+	err := db.QueryRow(`SELECT yaml FROM policy_snapshots WHERE id = `+ph(1), id).Scan(&yaml)
 	if err != nil {
 		return err
 	}
@@ -1220,7 +1263,8 @@ func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payload
 		}
 	}
 
-	insertSQL := `INSERT INTO audit_logs (client_ip, session_key, direction, action, rule_matched, payload_snippet) VALUES (?, ?, ?, ?, ?, ?)`
+	insertSQL := `INSERT INTO audit_logs (client_ip, session_key, direction, action, rule_matched, payload_snippet) VALUES (` +
+		ph(1) + `,` + ph(2) + `,` + ph(3) + `,` + ph(4) + `,` + ph(5) + `,` + ph(6) + `)`
 	_, err := db.Exec(insertSQL, clientIP, sessionKey, direction, action, ruleMatched, payloadSnippet)
 	if err != nil {
 		log.Println("Error writing to audit log:", err)
@@ -2379,13 +2423,25 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		policyLock.RLock() // Acquire read lock for globalRuleCounts
 		ruleCounts := globalRuleCounts
 		policyLock.RUnlock()
+		tlsMode := "self-signed"
+		if os.Getenv("ACME_DOMAIN") != "" {
+			tlsMode = "acme"
+		} else if os.Getenv("TLS_CERT") != "" {
+			tlsMode = "custom"
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"blocked":    b,
-			"redacted":   rd,
-			"allowed":    al,
-			"total":      b + rd + al,
-			"uptime":     time.Since(statsStarted).Truncate(time.Second).String(),
-			"start_time": statsStarted.Format(time.RFC3339),
+			"blocked":          b,
+			"redacted":         rd,
+			"allowed":          al,
+			"total":            b + rd + al,
+			"uptime":           time.Since(statsStarted).Truncate(time.Second).String(),
+			"start_time":       statsStarted.Format(time.RFC3339),
+			"secrets_provider":  secretsProviderName,
+			"db_driver":         dbDriver,
+			"redis_enabled":     redisEnabled,
+			"acme_domain":       os.Getenv("ACME_DOMAIN"),
+			"tls_mode":          tlsMode,
+			"infra_needs_restart": infraNeedsRestart,
 			"rule_counts": map[string]int{
 				"prompt_injection":  ruleCounts.PromptInjection,
 				"secrets":           ruleCounts.Secrets,
@@ -2489,7 +2545,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		rows, err := db.Query(
 			`SELECT id, timestamp, client_ip, session_key, direction, action, rule_matched, payload_snippet
-				 FROM audit_logs ORDER BY id DESC LIMIT ?`, limit,
+				 FROM audit_logs ORDER BY id DESC LIMIT `+ph(1), limit,
 		)
 		if err != nil {
 			http.Error(w, `{"error":"db query failed"}`, http.StatusInternalServerError)
@@ -2948,6 +3004,40 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			out = []string{}
 		}
 		json.NewEncoder(w).Encode(out)
+
+	// GET /armor/api/infra — returns current infra config + live status (admin only)
+	case endpoint == "infra" && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(getInfraStatus())
+
+	// POST /armor/api/infra — saves new config, hot-applies where possible (admin only)
+	case endpoint == "infra" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, `{"error":"read body"}`, http.StatusBadRequest)
+			return
+		}
+		var newCfg InfraConfig
+		if err := json.Unmarshal(body, &newCfg); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		needsRestart, err := saveInfraConfig(newCfg)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":            true,
+			"needs_restart": needsRestart,
+		})
 
 	default:
 		http.NotFound(w, r)
@@ -3475,6 +3565,10 @@ func modifyProxyResponse(resp *http.Response) error {
 // ──────────────────────────────────────────────
 
 func main() {
+	if err := initSecretsProvider(); err != nil {
+		log.Fatalf("❌ Secrets provider init failed: %v", err)
+	}
+
 	adminToken = os.Getenv("ADMIN_TOKEN")
 	userToken = os.Getenv("USER_TOKEN")
 	if adminToken == "" || userToken == "" {
@@ -3503,6 +3597,8 @@ func main() {
 		log.Fatalf("❌ OIDC init failed: %v", err)
 	}
 
+	loadInfraConfig() // must run before initRedis/initAuditDB so infra.yaml overrides .env
+	initRedis()
 	initAuditDB()
 	InitTenants() // must run after initAuditDB so tenant handlers have the DB
 	loadPolicy()
@@ -3543,6 +3639,7 @@ func main() {
 		http.HandleFunc("/armor/logout", HandleOIDCLogout)
 	}
 
+	http.HandleFunc("/armor/metrics", metricsHandler)
 	http.HandleFunc("/armor/", handleDashboard)
 	http.HandleFunc("/armor", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/armor/", http.StatusMovedPermanently)
@@ -3556,27 +3653,29 @@ func main() {
 	log.Println("🔒 Security Proxy running — HTTPS on https://localhost:8443")
 	log.Println("🔌 WebSocket scanning: ENABLED")
 	log.Println("📊 Dashboard: https://localhost:8443/armor/")
+
+	// ACME / Let's Encrypt takes priority when ACME_DOMAIN is set
+	if startTLS(nil) {
+		return // startTLS blocks; returns only if ACME domain not configured
+	}
+
 	tlsCert := os.Getenv("TLS_CERT")
 	tlsKey := os.Getenv("TLS_KEY")
 
+	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := "https://localhost:8443" + r.RequestURI
+		if h := r.Host; h != "" {
+			target = "https://" + strings.Replace(h, ":8080", ":8443", 1) + r.RequestURI
+		}
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
+	})
+
 	if tlsCert != "" && tlsKey != "" {
-		// HTTP on 8080 redirects to HTTPS on 8443 so existing bookmarks / clients
-		// that hit the plain-text port are upgraded automatically.
 		go func() {
 			log.Printf("↪  HTTP→HTTPS redirect listening on http://0.0.0.0:8080")
-			log.Fatal(http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				target := "https://" + r.Host
-				// Replace :8080 with :8443 in the host if present
-				if h := r.Host; h != "" {
-					target = "https://" + strings.Replace(h, ":8080", ":8443", 1) + r.RequestURI
-				} else {
-					target = "https://localhost:8443" + r.RequestURI
-				}
-				http.Redirect(w, r, target, http.StatusMovedPermanently)
-			})))
+			log.Fatal(http.ListenAndServe(":8080", redirect))
 		}()
 		log.Printf("🔒 TLS proxy listening on https://0.0.0.0:8443")
-		log.Printf("📊 Dashboard: https://localhost:8443/armor/")
 		log.Fatal(http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil))
 	} else {
 		log.Printf("⚠️  TLS_CERT / TLS_KEY not set — falling back to plain HTTP on :8080")

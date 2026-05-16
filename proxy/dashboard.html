@@ -481,6 +481,16 @@ function Ticker({events}){
 }
 
 /* ═══ HEALTH ═══ */
+function InfraBadge({label,value,ok}){
+  const col=ok===true?'var(--green)':ok===false?'var(--red)':'var(--t2)';
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:6}}>
+      <span style={{fontSize:10,color:'var(--t3)',minWidth:88,textTransform:'uppercase',letterSpacing:'.06em'}}>{label}</span>
+      <span style={{fontSize:11,color:col,fontWeight:600}}>{value}</span>
+    </div>
+  );
+}
+
 function Health({data,recentBlocks}){
   const{stats,audit}=data;
   const total=stats?.total||0,blocked=stats?.blocked||0,redacted=stats?.redacted||0,allowed=stats?.allowed||0;
@@ -491,6 +501,14 @@ function Health({data,recentBlocks}){
     ?"All systems nominal, but prompt-injection attempts are <span class='accent'>spiking</span>."
     :total>0?"All systems are <span class='accent'>nominal</span>, traffic flowing cleanly."
     :"Proxy <span class='accent'>active</span> and scanning all traffic.";
+
+  const dbLabel=stats?.db_driver==='postgres'?'PostgreSQL':'SQLite';
+  const dbOk=!!stats?.db_driver;
+  const redisLabel=stats?.redis_enabled?'Redis · connected':'In-memory (single node)';
+  const tlsLabels={acme:'Let\'s Encrypt (ACME)',custom:'Custom cert',self_signed:'Self-signed'};
+  const tlsLabel=tlsLabels[stats?.tls_mode?.replace('-','_')]||'Self-signed';
+  const secretsLabel=(stats?.secrets_provider||'env').toUpperCase();
+
   return(
     <div>
       <div className="two-col" style={{minHeight:'calc(100vh - 144px)'}}>
@@ -503,6 +521,22 @@ function Health({data,recentBlocks}){
               <div className="page-meta-row"><span className="page-meta-label">RATE</span><span className="page-meta-val">{rps}/s</span></div>
             </div>
           </div>
+
+          {/* Infrastructure status strip */}
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:24}}>
+            {[
+              {t:'Database',    v:dbLabel,     ok:dbOk},
+              {t:'Rate Limits', v:redisLabel,  ok:stats?.redis_enabled},
+              {t:'TLS',         v:tlsLabel,    ok:true},
+              {t:'Secrets',     v:secretsLabel,ok:true},
+            ].map(c=>(
+              <div key={c.t} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:'10px 12px',background:'var(--s1)'}}>
+                <div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{c.t}</div>
+                <div style={{fontSize:12,color:c.ok===false?'var(--yellow)':'var(--t2)',fontWeight:600,lineHeight:1.3}}>{c.v}</div>
+              </div>
+            ))}
+          </div>
+
           <div className="sec-hdr">
             <span className="sec-title">Total Events · Last 24h</span>
             <span className="sec-meta"><span className="hi">{fmt(total)}</span> total</span>
@@ -2187,6 +2221,237 @@ function AuthSettings({role}){
 
 
 /* ═══ TENANTS TAB ═══ */
+/* ═══ INFRASTRUCTURE TAB ═══ */
+function InfraTab({stats,role}){
+  const isAdmin=role==='admin';
+  const[infra,setInfra]=useState(null);
+  const[form,setForm]=useState(null);
+  const[saving,setSaving]=useState(false);
+  const[result,setResult]=useState(null);
+  const[copied,setCopied]=useState('');
+
+  const load=()=>api('infra').then(r=>r.json()).then(d=>{
+    setInfra(d);
+    setForm(d.config||{database:{url:''},redis:{url:''},acme:{domain:'',email:'',staging:false},metrics:{token:''}});
+  }).catch(()=>{});
+  useEffect(()=>{if(isAdmin)load();},[isAdmin]);
+
+  const set=(section,field,val)=>setForm(f=>({...f,[section]:{...f[section],[field]:val}}));
+
+  const save=async()=>{
+    setSaving(true);setResult(null);
+    try{
+      const r=await api('infra',{method:'POST',body:JSON.stringify(form)});
+      const d=await r.json();
+      setResult(d);
+      load();
+    }catch(e){setResult({error:String(e)});}
+    setSaving(false);
+  };
+
+  const copy=(text,key)=>{navigator.clipboard?.writeText(text);setCopied(key);setTimeout(()=>setCopied(''),1800);};
+
+  const metricsUrl=window.location.origin+'/armor/metrics';
+  const scrapeYaml=`- job_name: agentarmor\n  static_configs:\n    - targets: ["${window.location.host}"]\n  scheme: https\n  bearer_token: "<METRICS_TOKEN>"\n  tls_config: { insecure_skip_verify: true }`;
+
+  /* shared styles */
+  const inp=(val,onChange,type='text',ph='')=>(
+    <input type={type} value={val||''} onChange={e=>onChange(e.target.value)} placeholder={ph} disabled={!isAdmin}
+      style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+        color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none',boxSizing:'border-box',opacity:isAdmin?1:.6}}
+      onFocus={e=>{if(isAdmin)e.target.style.borderColor='var(--purple)'}}
+      onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+  );
+  const lbl=(text,sub,badge)=>(
+    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:5}}>
+      <span style={{fontSize:11,color:'var(--t3)'}}>{text}</span>
+      {sub&&<span style={{fontSize:10,color:'var(--t3)',opacity:.7}}>{sub}</span>}
+      {badge==='hot'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'rgba(74,222,128,.15)',color:'var(--green)',fontWeight:700}}>HOT RELOAD</span>}
+      {badge==='restart'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'rgba(251,191,36,.12)',color:'var(--yellow)',fontWeight:700}}>RESTART REQUIRED</span>}
+    </div>
+  );
+  const card=(title,children)=>(
+    <div style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:18,background:'var(--s1)',marginBottom:12}}>
+      <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',marginBottom:14,textTransform:'uppercase',letterSpacing:'.05em'}}>{title}</div>
+      {children}
+    </div>
+  );
+  const statusRow=(label,val,ok)=>(
+    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--b1)'}}>
+      <span style={{fontSize:11,color:'var(--t3)'}}>{label}</span>
+      <span style={{display:'flex',alignItems:'center',gap:6}}>
+        {ok!=null&&<span style={{width:7,height:7,borderRadius:'50%',background:ok?'var(--green)':'var(--yellow)',display:'inline-block'}}/>}
+        <span style={{fontSize:11,color:'var(--t2)',fontWeight:600}}>{val}</span>
+      </span>
+    </div>
+  );
+
+  /* live values from stats (always visible) */
+  const db=stats?.db_driver||'sqlite3';
+  const redisOn=stats?.redis_enabled||infra?.redis_enabled;
+  const tlsMode=stats?.tls_mode||infra?.tls_mode||'self-signed';
+  const tlsLabels={'acme':'Let\'s Encrypt (ACME)','custom':'Custom cert','self-signed':'Self-signed (dev)'};
+  const secrets=stats?.secrets_provider||infra?.secrets_provider||'env';
+
+  const needsRestart=infra?.needs_restart||stats?.infra_needs_restart;
+
+  if(!isAdmin)return(
+    <div style={{maxWidth:860,margin:'0 auto',padding:24}}>
+      <div className="page-label"><span className="page-label-dot"/><span>Infrastructure</span><span>·</span><span>Read-only</span></div>
+      <h1 className="page-headline">Infrastructure <span className="accent">status</span>.</h1>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginTop:24}}>
+        {card('Database',<div>{statusRow('Driver',db==='postgres'?'PostgreSQL':'SQLite (WAL)',db==='postgres')}{statusRow('HA',db==='postgres'?'Multi-instance':'Single-node',db==='postgres')}</div>)}
+        {card('Rate Limiting',<div>{statusRow('Mode',redisOn?'Redis (distributed)':'In-memory',redisOn)}</div>)}
+        {card('TLS',<div>{statusRow('Mode',tlsLabels[tlsMode]||tlsMode,tlsMode!=='self-signed')}</div>)}
+        {card('Secrets',<div>{statusRow('Provider',secrets.toUpperCase(),secrets!=='env')}</div>)}
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{maxWidth:860,margin:'0 auto',padding:24}}>
+      <div className="page-label"><span className="page-label-dot"/><span>Infrastructure</span><span>·</span><span>HA, Metrics &amp; TLS</span></div>
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24}}>
+        <h1 className="page-headline">Storage, rate-limiting,<br/>certs and <span className="accent">observability</span>.</h1>
+        <div className="page-meta">
+          <div className="page-meta-row"><span className="page-meta-label">DB</span>
+            <span className="page-meta-val" style={{color:db==='postgres'?'var(--green)':'var(--t2)'}}>{db==='postgres'?'PostgreSQL':'SQLite'}</span>
+          </div>
+          <div className="page-meta-row"><span className="page-meta-label">Redis</span>
+            <span className="page-meta-val" style={{color:redisOn?'var(--green)':'var(--t3)'}}>{redisOn?'Connected':'Off'}</span>
+          </div>
+        </div>
+      </div>
+
+      {needsRestart&&(
+        <div style={{padding:'10px 14px',marginBottom:16,background:'rgba(251,191,36,.08)',border:'1px solid rgba(251,191,36,.3)',borderRadius:'var(--r)',fontSize:11,color:'var(--yellow)'}}>
+          ⚠ One or more changes require a container restart to take effect (<code>docker compose restart agentarmor</code>).
+        </div>
+      )}
+
+      {result&&(
+        <div style={{padding:'10px 14px',marginBottom:16,
+          background:result.error?'rgba(239,68,68,.08)':'rgba(74,222,128,.08)',
+          border:`1px solid ${result.error?'rgba(239,68,68,.3)':'rgba(74,222,128,.3)'}`,
+          borderRadius:'var(--r)',fontSize:11,color:result.error?'var(--red)':'var(--green)'}}>
+          {result.error?'❌ '+result.error
+            :result.needs_restart?'✓ Saved — Redis and metrics token applied immediately. Restart required for database / ACME changes.'
+            :'✓ All changes applied immediately — no restart needed.'}
+        </div>
+      )}
+
+      {!form?<div className="empty">Loading…</div>:(
+        <>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+
+          {/* Database */}
+          {card('Audit Log · Database',(
+            <div>
+              {statusRow('Active driver',db==='postgres'?'PostgreSQL':'SQLite (WAL mode)',db==='postgres')}
+              {statusRow('HA mode',db==='postgres'?'Multi-instance ready':'Single-node only',db==='postgres')}
+              <div style={{marginTop:12}}>
+                {lbl('PostgreSQL connection string','— leave empty for SQLite','restart')}
+                {inp(form.database?.url,v=>set('database','url',v),'text','postgres://user:pass@host:5432/agentarmor?sslmode=disable')}
+              </div>
+            </div>
+          ))}
+
+          {/* Redis */}
+          {card('Rate Limiting · Redis',(
+            <div>
+              {statusRow('Mode',redisOn?'Redis — distributed':'In-memory (single node)',redisOn)}
+              {statusRow('Fail-open','Always — falls back to allow if Redis down',true)}
+              <div style={{marginTop:12}}>
+                {lbl('Redis URL','— leave empty for in-memory','hot')}
+                {inp(form.redis?.url,v=>set('redis','url',v),'text','redis://host:6379  or  redis://:password@host:6379')}
+              </div>
+            </div>
+          ))}
+
+          {/* TLS / ACME */}
+          {card('TLS · Certificate',(
+            <div>
+              {statusRow('Active mode',tlsLabels[tlsMode]||tlsMode,tlsMode!=='self-signed')}
+              <div style={{marginTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                <div>
+                  {lbl('Domain','— public hostname','restart')}
+                  {inp(form.acme?.domain,v=>set('acme','domain',v),'text','proxy.example.com')}
+                </div>
+                <div>
+                  {lbl('Email','— Let\'s Encrypt contact','restart')}
+                  {inp(form.acme?.email,v=>set('acme','email',v),'text','ops@example.com')}
+                </div>
+              </div>
+              <div style={{marginTop:8,display:'flex',alignItems:'center',gap:8}}>
+                <input type="checkbox" id="acme-staging" checked={!!form.acme?.staging}
+                  onChange={e=>set('acme','staging',e.target.checked)} disabled={!isAdmin}/>
+                <label htmlFor="acme-staging" style={{fontSize:11,color:'var(--t3)',cursor:'pointer'}}>
+                  Use staging (Let's Encrypt test env — no rate limits, untrusted cert)
+                </label>
+              </div>
+              <div style={{marginTop:8,fontSize:11,color:'var(--t3)'}}>
+                For a custom CA cert, mount <code style={{color:'var(--yellow)'}}>certs/server.crt</code> + <code style={{color:'var(--yellow)'}}>certs/server.key</code> — no config needed.
+              </div>
+            </div>
+          ))}
+
+          {/* Prometheus metrics */}
+          {card('Prometheus Metrics',(
+            <div>
+              {statusRow('Endpoint',metricsUrl,true)}
+              {statusRow('Format','text/plain v0.0.4 (Prometheus)',true)}
+              {statusRow('Auth',os.Getenv?'':'Bearer token (METRICS_TOKEN)',true)}
+              <div style={{marginTop:12}}>
+                {lbl('Scrape bearer token','— leave empty to allow unauthenticated scraping','hot')}
+                {inp(form.metrics?.token,v=>set('metrics','token',v),'password','optional-token')}
+              </div>
+              <div style={{marginTop:12,display:'flex',gap:8}}>
+                <a href="/armor/metrics" target="_blank" rel="noreferrer"
+                  style={{fontSize:11,padding:'4px 10px',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+                    color:'var(--t2)',background:'var(--bg)',textDecoration:'none'}}>
+                  Open /armor/metrics ↗
+                </a>
+                <button onClick={()=>copy(scrapeYaml,'sc')}
+                  style={{fontSize:11,padding:'4px 10px',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+                    color:'var(--t2)',background:'var(--bg)',cursor:'pointer',fontFamily:'var(--font)'}}>
+                  {copied==='sc'?'Copied!':'Copy Scrape Config'}
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {/* Secrets provider — read-only, set via .env */}
+          {card('Secrets · Provider',(
+            <div>
+              {statusRow('Active provider',secrets==='env'?'Environment variables':secrets.toUpperCase(),secrets!=='env')}
+              {secrets==='env'?
+                <div style={{marginTop:10,padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--r)',fontSize:11,color:'var(--t3)'}}>
+                  Set <code style={{color:'var(--yellow)'}}>SECRETS_PROVIDER=vault|aws|gcp|azure</code> in <code style={{color:'var(--yellow)'}}>infra.yaml</code> or <code style={{color:'var(--yellow)'}}>.env</code>. Connection details (tokens, keys) stay in <code>.env</code> for security.
+                </div>
+              :
+                <div style={{marginTop:10,padding:'8px 10px',background:'rgba(74,222,128,.06)',borderRadius:'var(--r)',fontSize:11,color:'var(--t3)'}}>
+                  Secrets loaded from <strong style={{color:'var(--green)'}}>{secrets.toUpperCase()}</strong> at startup. Changing the provider requires updating <code>.env</code> and restarting.
+                </div>
+              }
+            </div>
+          ))}
+
+        </div>
+
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:4}}>
+          <button onClick={save} disabled={saving}
+            style={{padding:'8px 20px',background:'var(--purple)',border:'none',borderRadius:'var(--r)',
+              color:'#fff',fontSize:12,fontWeight:700,cursor:saving?'wait':'pointer',fontFamily:'var(--font)',
+              opacity:saving?.6:1}}>
+            {saving?'Saving…':'Save & Apply'}
+          </button>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TenantsTab({role}){
   const isAdmin=role==='admin';
   const[tenants,setTenants]=useState(null);
@@ -2502,6 +2767,7 @@ function App(){
     {id:'auth',     num:'07',label:'Auth'},
     {id:'tenants',  num:'08',label:'Tenants'},
     {id:'logs',     num:'09',label:'Logs'},
+    {id:'infra',    num:'10',label:'Infrastructure'},
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -2567,6 +2833,7 @@ function App(){
         {tab==='auth'     &&<AuthSettings role={role}/>}
         {tab==='tenants'  &&<TenantsTab role={role}/>}
         {tab==='logs'     &&<Logs     role={role}/>}
+        {tab==='infra'    &&<InfraTab  stats={stats} role={role}/>}
       </main>
 
       {/* CmdK — exact AgentArmor.html */}

@@ -286,6 +286,219 @@ agentarmor-oss/
 └── assets/              # logo.png + banner.png
 ```
 
+## Deployment Architectures
+
+AgentArmor is a single stateless binary that fits into any enterprise topology. Choose the pattern that matches your scale, compliance requirements, and existing infrastructure.
+
+---
+
+### Pattern 1 — Developer / POC (single container)
+
+The default out-of-the-box setup. One `docker compose up` command, no external dependencies.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Single host / developer laptop                      │
+│                                                     │
+│  ┌──────────────┐   HTTPS :8443   ┌──────────────┐  │
+│  │  Browser /   │────────────────▶│  AgentArmor  │  │
+│  │  IDE / CLI   │                 │  + Ollama    │  │
+│  └──────────────┘                 │  + Presidio  │  │
+│                                   │  SQLite DB   │  │
+│                                   └──────┬───────┘  │
+│                                          │ HTTPS     │
+│                                   LLM API (external) │
+└─────────────────────────────────────────────────────┘
+```
+
+| Setting | Value |
+|---|---|
+| Database | SQLite (WAL mode, local file) |
+| Rate limiting | In-memory token bucket |
+| TLS | Self-signed cert (auto-generated) |
+| Auth | Static `ADMIN_TOKEN` / `USER_TOKEN` |
+| Secrets | Environment variables |
+
+**Best for:** Proof-of-concept, developer workstations, feature evaluation.
+
+---
+
+### Pattern 2 — Team / Small Production (single VM + external LLM)
+
+One VM or VPS running AgentArmor as the gateway for a team. CA cert from Let's Encrypt, SSO via existing IdP.
+
+```
+                       ┌────────────────────────────────────┐
+   Developers /        │  Cloud VM  (e.g. AWS EC2, GCP VM)  │
+   IDE extensions ────▶│                                    │
+                       │  ┌──────────────────────────────┐  │
+   Internal tools ────▶│  │      AgentArmor              │  │
+                       │  │  - Let's Encrypt cert (ACME) │  │──▶ OpenAI / Anthropic
+   Web dashboard ─────▶│  │  - Okta / Azure AD SSO       │  │──▶ Gemini / Bedrock
+                       │  │  - SQLite audit log          │  │
+                       │  │  - Slack SIEM webhook        │  │
+                       │  └──────────────────────────────┘  │
+                       └────────────────────────────────────┘
+```
+
+| Setting | Value |
+|---|---|
+| Database | SQLite (sufficient for < ~10k events/day) |
+| TLS | ACME / Let's Encrypt (`ACME_DOMAIN` + `ACME_EMAIL`) |
+| Auth | OIDC (Okta, Azure AD, Google Workspace) |
+| Secrets | HashiCorp Vault or AWS Secrets Manager |
+| SIEM | Slack webhook or Splunk HEC |
+
+**Best for:** Engineering teams of 5–50, startup security baseline, single-region.
+
+---
+
+### Pattern 3 — Multi-team Enterprise (HA with tenant isolation)
+
+Multiple proxy instances behind a load balancer, shared PostgreSQL + Redis, per-team tenant isolation. Horizontally scalable.
+
+```
+                    ┌───────────────────────────────────────────────────────┐
+                    │   Enterprise Private Network / VPC                     │
+                    │                                                       │
+  Team Alpha ──────▶│  ┌──────────────┐       ┌───────────────────────┐   │
+  (X-Tenant-ID:     │  │  Load         │       │  AgentArmor  (×N)     │   │
+   team-alpha)      │  │  Balancer /   │──────▶│  - Policy per tenant  │──▶│──▶ LLM APIs
+                    │  │  API Gateway  │       │  - Shared PostgreSQL   │   │
+  Team Beta ───────▶│  │  (nginx /     │       │  - Shared Redis        │   │
+  (X-Tenant-ID:     │  │   Envoy /     │       │  - Vault secrets       │   │
+   team-beta)       │  │   ALB)        │       └───────────────────────┘   │
+                    │  └──────────────┘                                     │
+                    │                         ┌──────────┐  ┌───────────┐  │
+                    │                         │PostgreSQL│  │  Redis    │  │
+                    │                         │ (RDS /   │  │(Elasticache│  │
+                    │                         │ Cloud SQL)│  │ / Memstore)│  │
+                    │                         └──────────┘  └───────────┘  │
+                    └───────────────────────────────────────────────────────┘
+```
+
+| Setting | Value |
+|---|---|
+| Database | PostgreSQL (RDS, Cloud SQL, or self-hosted) — set `DATABASE_URL` |
+| Rate limiting | Redis (ElastiCache, Memorystore, or self-hosted) — set `REDIS_URL` |
+| TLS | CA-signed cert from internal PKI, mounted into `./certs/` |
+| Auth | Enterprise OIDC (Okta, Azure AD, Keycloak) |
+| Secrets | HashiCorp Vault (AppRole) or cloud KMS |
+| Tenancy | One tenant per team — `X-Tenant-ID` header or Bearer token routing |
+| Observability | Prometheus scrape → Grafana; Splunk HEC for SIEM |
+
+**Best for:** Large engineering orgs, platform/security teams serving multiple product teams, SOC 2 environments.
+
+---
+
+### Pattern 4 — Kubernetes Sidecar (per-application isolation)
+
+AgentArmor deployed as a sidecar container alongside each AI-enabled application pod. Each pod has its own policy, audit trail, and rate limits. No shared state required.
+
+```
+┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐
+│  Pod: chat-service                   │  │  Pod: code-assistant                  │
+│                                      │  │                                      │
+│  ┌────────────┐   ┌───────────────┐  │  │  ┌────────────┐   ┌───────────────┐  │
+│  │ App        │──▶│  AgentArmor   │──┼──┼─▶│ App        │──▶│  AgentArmor   │  │
+│  │ Container  │   │  (sidecar)    │  │  │  │ Container  │   │  (sidecar)    │  │
+│  └────────────┘   │  policy.yaml  │  │  │  └────────────┘   │  policy.yaml  │  │
+│                   │  skills/      │  │  │                   │  skills/      │  │
+│                   └──────┬────────┘  │  │                   └──────┬────────┘  │
+└──────────────────────────┼───────────┘  └──────────────────────────┼───────────┘
+                           │                                          │
+                    ┌──────▼──────────────────────────────────────────▼──────┐
+                    │                  LLM API (cluster egress)               │
+                    └────────────────────────────────────────────────────────┘
+```
+
+**Kubernetes setup:**
+```yaml
+# In your app Deployment spec:
+containers:
+  - name: app
+    image: your-app:latest
+  - name: agentarmor
+    image: ghcr.io/vikrantwaghmode/agentarmor:latest
+    env:
+      - name: TARGET_URL
+        value: "https://api.openai.com"
+      - name: ADMIN_TOKEN
+        valueFrom: { secretKeyRef: { name: agentarmor, key: admin-token } }
+    ports:
+      - containerPort: 8443
+    volumeMounts:
+      - name: policy
+        mountPath: /app/policy.yaml
+        subPath: policy.yaml
+volumes:
+  - name: policy
+    configMap: { name: agentarmor-policy }
+```
+
+| Setting | Value |
+|---|---|
+| Database | SQLite per pod (ephemeral audit log) **or** PostgreSQL (shared persistent audit) |
+| Policy | ConfigMap per application — different rules for chat vs. code vs. data apps |
+| Secrets | Kubernetes Secrets → env vars, or Vault Agent sidecar |
+| Network policy | Kubernetes NetworkPolicy restricting egress to only the LLM API |
+
+**Best for:** Platform engineering teams running many AI apps, zero-trust service mesh environments, Istio / Linkerd deployments.
+
+---
+
+### Pattern 5 — Air-gapped / On-premises (no external calls)
+
+Fully self-contained deployment with no internet access. All LLM scanning uses local Ollama models.
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│   On-premises data centre (air-gapped)                                 │
+│                                                                       │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐  │
+│  │  Internal    │────▶│  AgentArmor  │────▶│  On-prem LLM         │  │
+│  │  AI clients  │     │              │     │  (Ollama / vLLM /    │  │
+│  └──────────────┘     │  Scanners:   │     │   Azure OpenAI       │  │
+│                       │  - Regex     │     │   Private Endpoint)  │  │
+│  ┌──────────────┐     │  - Ollama    │     └──────────────────────┘  │
+│  │  Admin       │     │    LLM scan  │                               │
+│  │  Dashboard   │     │  - Presidio  │     ┌──────────────────────┐  │
+│  └──────────────┘     │    (local)   │     │  PostgreSQL (on-prem) │  │
+│                       └──────────────┘     └──────────────────────┘  │
+│                                                                       │
+│  ✗ No outbound internet — threat feeds disabled, ACME disabled        │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+| Setting | Value |
+|---|---|
+| LLM provider | `TARGET_URL` pointing to internal vLLM / Ollama / Azure Private Endpoint |
+| LLM scanner | `llm_scanner.url: http://ollama:11434` — local model |
+| PII scanner | Presidio sidecar — local NLP, no cloud calls |
+| TLS | Internal CA cert in `./certs/` |
+| Threat feeds | Disabled (no outbound internet) |
+| Secrets | On-prem HashiCorp Vault or Kubernetes Secrets |
+| SIEM | Internal Splunk / QRadar / ArcSight via generic webhook |
+
+**Best for:** Financial services, defence, government, healthcare — any environment with strict data residency or no-internet requirements.
+
+---
+
+### Architecture Decision Guide
+
+| Requirement | Recommended Pattern |
+|---|---|
+| Trying it out, POC | Pattern 1 — single container |
+| One team, public cloud | Pattern 2 — single VM + ACME |
+| Multiple teams, compliance audit | Pattern 3 — HA + multi-tenant |
+| Many AI microservices | Pattern 4 — Kubernetes sidecar |
+| Data residency / air-gap | Pattern 5 — on-premises |
+| All of the above (phased rollout) | Start with 1 → migrate to 3 → decompose to 4 |
+
+All patterns use the same Docker image and the same `policy.yaml` schema — you change the infrastructure around AgentArmor, not AgentArmor itself.
+
+---
+
 ## Enterprise Readiness
 
 | Area | Status | Notes |
@@ -301,25 +514,55 @@ agentarmor-oss/
 | IP-level rate limiting | ✅ | Session key + client IP (X-Forwarded-For aware) token bucket |
 | **SSO / OIDC** | ✅ | Google, Microsoft, Okta, Auth0, Keycloak — configurable from Auth tab (07) without restart |
 | **Multi-tenancy** | ✅ | Per-tenant policies, tokens, audit trails, rate limits — routed via `X-Tenant-ID` header or Bearer token; managed from Tenants tab (08) |
-| **High availability** | ❌ | Single container + SQLite — no clustering or shared state |
-| **Prometheus metrics** | ❌ | No `/metrics` endpoint for Grafana/Datadog |
-| **Secrets vault** | ❌ | API keys in env vars — no Vault/KMS integration |
-| **Cert auto-renewal** | ❌ | No ACME/Let's Encrypt — manual rotation |
+| **High availability** | ✅ | PostgreSQL audit log (`DATABASE_URL`) + Redis distributed rate limiting (`REDIS_URL`); stateless proxy scales horizontally |
+| **Prometheus metrics** | ✅ | `/armor/metrics` Prometheus text format; optional `METRICS_TOKEN` scrape auth; exposes request counters, scanner rules, goroutines, heap |
+| **Secrets vault** | ✅ | HashiCorp Vault (token/AppRole), AWS Secrets Manager (static/IMDSv2), GCP Secret Manager (SA key/metadata), Azure Key Vault (SP/managed identity) |
+| **Cert auto-renewal** | ✅ | ACME / Let's Encrypt via `ACME_DOMAIN` + `ACME_EMAIL`; auto-renews; falls back to self-signed when unset |
 
-The security *design* is enterprise-grade. The primary remaining blockers for large-scale deployment are HA and Prometheus metrics.
+The security *design* is enterprise-grade. All major infrastructure gaps have been closed.
+
+## High Availability Setup
+
+To run multiple proxy instances sharing state:
+
+```bash
+# docker-compose.yml — uncomment postgres and redis services, then:
+DATABASE_URL="postgres://agentarmor:secret@postgres:5432/agentarmor?sslmode=disable"
+REDIS_URL="redis://redis:6379"
+```
+
+Both are **opt-in** — the default single-container SQLite + in-memory rate limiting requires no changes.
+
+## Prometheus Metrics
+
+```
+GET https://localhost:8443/armor/metrics
+Authorization: Bearer <METRICS_TOKEN>   # if METRICS_TOKEN is set
+```
+
+Prometheus scrape config:
+```yaml
+- job_name: agentarmor
+  static_configs:
+    - targets: ["your-host:8443"]
+  scheme: https
+  bearer_token: "<METRICS_TOKEN>"
+  tls_config: { insecure_skip_verify: true }  # remove when using CA cert
+```
 
 ## Roadmap
 
 ### Recently shipped
 - [x] **SSO / OIDC** — Google, Microsoft, Okta, Auth0, Keycloak; live-configurable from the Auth tab without restart
 - [x] **Multi-tenancy** — Isolated policies, tokens, audit logs, and rate limits per team/application; routed via `X-Tenant-ID` header or Bearer token
+- [x] **Secrets vault / KMS** — HashiCorp Vault (token or AppRole), AWS Secrets Manager (static creds or EC2 IMDSv2), GCP Secret Manager (service account or GCE metadata), Azure Key Vault (service principal or managed identity); zero new Go dependencies
+- [x] **High availability** — PostgreSQL audit log + Redis distributed rate limiting; proxy is now stateless and horizontally scalable
+- [x] **Prometheus metrics** — `/armor/metrics` endpoint with request counters, scanner rule counts, goroutines, heap usage
+- [x] **Cert auto-renewal** — ACME / Let's Encrypt with HTTP-01 challenge; auto-renews before expiry
 
 ### Upcoming
-- [ ] **High availability** — PostgreSQL audit log, Redis rate-limiter state, horizontal scaling
-- [ ] **Prometheus metrics** — `/metrics` endpoint for Grafana / Datadog
-- [ ] **Cert auto-renewal** — ACME / Let's Encrypt integration
-- [ ] **Secrets vault** — Vault / KMS integration for API key storage
-- [ ] **WASM filters** — Custom filtering logic without recompiling
+- [ ] **WASM filters** — Custom filtering logic compiled to WASM, loaded at runtime without rebuilding
+- [ ] **OpenTelemetry traces** — Distributed tracing for request pipeline observability
 
 ## Contributing
 

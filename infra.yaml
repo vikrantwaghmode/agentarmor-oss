@@ -1,0 +1,29 @@
+# AgentArmor Infrastructure Configuration
+# Managed via dashboard tab 10 — Infrastructure.
+# Changes are hot-applied where noted; others require a container restart.
+
+database:
+  # Audit log backend. Leave empty to use the default SQLite database.
+  # PostgreSQL enables multi-instance HA: postgres://user:pass@host:5432/db
+  # Requires restart to take effect.
+  url: ""
+
+redis:
+  # Distributed rate limiting. Leave empty for in-memory (single node).
+  # Format: redis://host:6379  or  redis://:password@host:6379
+  # Hot-reloaded — no restart needed.
+  url: ""
+
+acme:
+  # Let's Encrypt automatic TLS. Leave domain empty to use the self-signed cert.
+  # Port 80 must be publicly reachable from the internet for HTTP-01 challenge.
+  # Requires restart to take effect.
+  domain: ""
+  email: ""
+  staging: false
+
+metrics:
+  # Optional Bearer token to protect GET /armor/metrics from public access.
+  # Leave empty to allow unauthenticated scraping (fine for internal networks).
+  # Hot-reloaded — no restart needed.
+  token: ""
