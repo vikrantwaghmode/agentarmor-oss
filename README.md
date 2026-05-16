@@ -28,7 +28,7 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
                         │ │Ollama│ │Presidio │ └───────────┬───────────┘   │
                         │ │(LLM) │ │(PII/DLP)│             ▼               │
                         │ └──────┘ └─────────┘ ┌───────────────────────┐   │
-                        │                      │   Audit DB (SQLite)   │   │
+                        │                           │   Audit DB (SQLite)   │   │
                         │                      └───────────────────────┘   │
                         └──────────────────────────────────────────────────┘
 ```
@@ -293,9 +293,23 @@ agentarmor-oss/
 
 AgentArmor is a single stateless binary that fits into any enterprise topology. Choose the pattern that matches your scale, compliance requirements, and existing infrastructure.
 
+| Requirement | Recommended Pattern |
+|---|---|
+| Trying it out, POC | [Pattern 1](#) — single container |
+| One team, public cloud | [Pattern 2](#) — single VM + ACME |
+| Multiple teams, compliance audit | [Pattern 3](#) — HA + multi-tenant |
+| Many AI microservices | [Pattern 4](#) — Kubernetes sidecar |
+| Data residency / air-gap | [Pattern 5](#) — on-premises |
+| All of the above (phased rollout) | Start with 1 → migrate to 3 → decompose to 4 |
+
+All patterns use the same Docker image and the same `policy.yaml` schema — you change the infrastructure around AgentArmor, not AgentArmor itself.
+
 ---
 
-### Pattern 1 — Developer / POC (single container)
+<details>
+<summary><strong>Pattern 1 — Developer / POC (single container)</strong> &nbsp;·&nbsp; <em>docker compose up, no external deps</em></summary>
+
+<br>
 
 The default out-of-the-box setup. One `docker compose up` command, no external dependencies.
 
@@ -324,9 +338,14 @@ The default out-of-the-box setup. One `docker compose up` command, no external d
 
 **Best for:** Proof-of-concept, developer workstations, feature evaluation.
 
+</details>
+
 ---
 
-### Pattern 2 — Team / Small Production (single VM + external LLM)
+<details>
+<summary><strong>Pattern 2 — Team / Small Production (single VM + external LLM)</strong> &nbsp;·&nbsp; <em>ACME cert, SSO, Vault secrets</em></summary>
+
+<br>
 
 One VM or VPS running AgentArmor as the gateway for a team. CA cert from Let's Encrypt, SSO via existing IdP.
 
@@ -354,9 +373,14 @@ One VM or VPS running AgentArmor as the gateway for a team. CA cert from Let's E
 
 **Best for:** Engineering teams of 5–50, startup security baseline, single-region.
 
+</details>
+
 ---
 
-### Pattern 3 — Multi-team Enterprise (HA with tenant isolation)
+<details>
+<summary><strong>Pattern 3 — Multi-team Enterprise (HA with tenant isolation)</strong> &nbsp;·&nbsp; <em>PostgreSQL, Redis, load balancer, per-team tenants</em></summary>
+
+<br>
 
 Multiple proxy instances behind a load balancer, shared PostgreSQL + Redis, per-team tenant isolation. Horizontally scalable.
 
@@ -392,9 +416,14 @@ Multiple proxy instances behind a load balancer, shared PostgreSQL + Redis, per-
 
 **Best for:** Large engineering orgs, platform/security teams serving multiple product teams, SOC 2 environments.
 
+</details>
+
 ---
 
-### Pattern 4 — Kubernetes Sidecar (per-application isolation)
+<details>
+<summary><strong>Pattern 4 — Kubernetes Sidecar (per-application isolation)</strong> &nbsp;·&nbsp; <em>one AgentArmor per pod, ConfigMap policies</em></summary>
+
+<br>
 
 AgentArmor deployed as a sidecar container alongside each AI-enabled application pod. Each pod has its own policy, audit trail, and rate limits. No shared state required.
 
@@ -448,9 +477,14 @@ volumes:
 
 **Best for:** Platform engineering teams running many AI apps, zero-trust service mesh environments, Istio / Linkerd deployments.
 
+</details>
+
 ---
 
-### Pattern 5 — Air-gapped / On-premises (no external calls)
+<details>
+<summary><strong>Pattern 5 — Air-gapped / On-premises (no external calls)</strong> &nbsp;·&nbsp; <em>local Ollama scanning, internal PKI, no internet</em></summary>
+
+<br>
 
 Fully self-contained deployment with no internet access. All LLM scanning uses local Ollama models.
 
@@ -485,20 +519,7 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 
 **Best for:** Financial services, defence, government, healthcare — any environment with strict data residency or no-internet requirements.
 
----
-
-### Architecture Decision Guide
-
-| Requirement | Recommended Pattern |
-|---|---|
-| Trying it out, POC | Pattern 1 — single container |
-| One team, public cloud | Pattern 2 — single VM + ACME |
-| Multiple teams, compliance audit | Pattern 3 — HA + multi-tenant |
-| Many AI microservices | Pattern 4 — Kubernetes sidecar |
-| Data residency / air-gap | Pattern 5 — on-premises |
-| All of the above (phased rollout) | Start with 1 → migrate to 3 → decompose to 4 |
-
-All patterns use the same Docker image and the same `policy.yaml` schema — you change the infrastructure around AgentArmor, not AgentArmor itself.
+</details>
 
 ---
 
@@ -599,9 +620,13 @@ Prometheus scrape config:
 - [x] **Cert auto-renewal** — ACME / Let's Encrypt with HTTP-01 challenge; auto-renews before expiry
 - [x] **Infrastructure dashboard (tab 10)** — configure PostgreSQL, Redis, ACME, and metrics token from the UI; hot-reload where possible; restart dialog ("now or later") for settings that need a container restart; Restart System button with auto-reload
 
+### Recently shipped (continued)
+- [x] **WASM filters** — Drop `.wasm` files into `./wasm-filters/`; runs after all built-in scanners; WASI stdin/stdout ABI works with Go, Rust, C, AssemblyScript; enable/disable/reload from Infrastructure tab without restart
+- [x] **OpenTelemetry traces** — Minimal OTLP/HTTP emitter (zero new Go deps); one span per HTTP request + scan child span; compatible with Jaeger, Grafana Tempo, Honeycomb, Datadog Agent; `X-Trace-ID` in response headers
+
 ### Upcoming
-- [ ] **WASM filters** — Custom filtering logic compiled to WASM, loaded at runtime without rebuilding
-- [ ] **OpenTelemetry traces** — Distributed tracing for request pipeline observability
+- [ ] **Helm chart** — Kubernetes-native deployment with values for HA, multi-tenant, and sidecar patterns
+- [ ] **Audit log export** — CSV / NDJSON export from the dashboard for compliance reporting
 
 ## Contributing
 
