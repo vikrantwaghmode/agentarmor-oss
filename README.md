@@ -120,52 +120,34 @@ OPENCLAW_GATEWAY_TOKEN="..."
 ## Kubernetes / Helm
 
 ```bash
-# Single replica (dev / staging)
-helm install agentarmor ./helm/agentarmor \
+# Install directly from the OCI registry (no clone needed)
+helm install agentarmor \
+  oci://ghcr.io/vikrantwaghmode/agentarmor \
+  --version 0.1.0 \
   --set auth.adminToken=changeme \
   --set auth.userToken=readonly
 
 # HA mode — PostgreSQL + Redis + HPA (2–10 replicas)
-helm install agentarmor ./helm/agentarmor \
+helm install agentarmor \
+  oci://ghcr.io/vikrantwaghmode/agentarmor --version 0.1.0 \
   --set auth.adminToken=changeme \
   --set auth.userToken=readonly \
   --set ha.enabled=true \
   --set ha.database.url="postgres://agentarmor:secret@pg:5432/agentarmor?sslmode=disable" \
   --set ha.redis.url="redis://redis:6379"
 
-# Sidecar mode — ClusterIP only, no ingress
-helm install agentarmor ./helm/agentarmor \
+# Sidecar mode — ClusterIP only, no Ingress
+helm install agentarmor \
+  oci://ghcr.io/vikrantwaghmode/agentarmor --version 0.1.0 \
   --set sidecar.enabled=true \
   --set auth.adminToken=changeme \
   --set auth.userToken=readonly
+
+# From source (local chart)
+helm install agentarmor ./helm/agentarmor --set auth.adminToken=changeme --set auth.userToken=readonly
 ```
 
-See [`helm/agentarmor/values.yaml`](helm/agentarmor/values.yaml) for the full option reference — OIDC, ACME, OTel, all secrets providers, custom policy/firewall ConfigMaps, resource limits, and ingress.
-
-## Kubernetes / Helm
-
-```bash
-# Single replica (dev / staging)
-helm install agentarmor ./helm/agentarmor \
-  --set auth.adminToken=changeme \
-  --set auth.userToken=readonly
-
-# HA mode — PostgreSQL + Redis + HPA (2–10 replicas)
-helm install agentarmor ./helm/agentarmor \
-  --set auth.adminToken=changeme \
-  --set auth.userToken=readonly \
-  --set ha.enabled=true \
-  --set ha.database.url="postgres://agentarmor:secret@pg:5432/agentarmor?sslmode=disable" \
-  --set ha.redis.url="redis://redis:6379"
-
-# Sidecar mode — ClusterIP only, no ingress
-helm install agentarmor ./helm/agentarmor \
-  --set sidecar.enabled=true \
-  --set auth.adminToken=changeme \
-  --set auth.userToken=readonly
-```
-
-See [`helm/agentarmor/values.yaml`](helm/agentarmor/values.yaml) for the full option reference — OIDC, ACME, OTel, all secrets providers, custom policy/firewall ConfigMaps, resource limits, and ingress.
+The chart is published automatically to `ghcr.io` via GitHub Actions on every release tag. See [`helm/agentarmor/values.yaml`](helm/agentarmor/values.yaml) for the full option reference — OIDC, ACME, OTel, all secrets providers, custom policy/firewall ConfigMaps, resource limits, and Ingress.
 
 ## Transport Security
 
@@ -677,9 +659,12 @@ Prometheus scrape config:
 - [x] **Helm chart** — `helm/agentarmor/` — values for single, HA (PostgreSQL + Redis + HPA), sidecar, and ACME patterns; supports `existingSecret`, custom policy/firewall ConfigMaps, OIDC, OTel, and all secrets providers
 - [x] **Audit log export** — `⬇ Export` dropdown in the Audit Log tab; CSV or NDJSON; row-limit options (1k / 10k / all rows); active filter preserved; admin-only; streams as a browser download
 
+- [x] **Helm OCI registry** — chart published to `ghcr.io/vikrantwaghmode/agentarmor` via GitHub Actions on every release tag; `helm install oci://ghcr.io/vikrantwaghmode/agentarmor --version x.y.z`
+- [x] **Audit date-range filter** — `From` / `To` datetime-local pickers in the export dropdown; filters passed as RFC3339 `?from=` / `?to=` params; active date range shown in the filter summary strip
+
 ### Upcoming
-- [ ] **Helm OCI registry** — `helm install` directly from `ghcr.io` without cloning
-- [ ] **Audit date-range filter** — `from` / `to` picker in the export dropdown
+- [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring
+- [ ] **Tenant policy templates** — create tenants from a named policy template instead of copying root policy
 
 ## Contributing
 

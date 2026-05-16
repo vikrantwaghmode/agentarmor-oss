@@ -1391,21 +1391,30 @@ function Policy({role}){
 }
 
 /* ═══ AUDIT ═══ */
-function ExportButton({disabled,setExporting,filterAction,filterDir}){
+function ExportButton({disabled,setExporting,filterAction}){
   const[open,setOpen]=useState(false);
+  const[fromDt,setFromDt]=useState('');
+  const[toDt,setToDt]=useState('');
   const ref=React.useRef();
 
-  // Close dropdown when clicking outside
   React.useEffect(()=>{
     const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
     document.addEventListener('mousedown',h);
     return()=>document.removeEventListener('mousedown',h);
   },[]);
 
+  // datetime-local gives "2026-01-15T14:30" — append :00Z to make RFC3339 UTC
+  const toRFC3339=(s)=>s?s+':00Z':'';
+
+  const hasRange=fromDt||toDt;
+
   const doExport=async(format,limit)=>{
     setOpen(false);setExporting(true);
     const params=new URLSearchParams({format,limit});
     if(filterAction&&filterAction!=='ALL')params.set('action',filterAction);
+    const from=toRFC3339(fromDt),to=toRFC3339(toDt);
+    if(from)params.set('from',from);
+    if(to)params.set('to',to);
     try{
       const resp=await fetch('/armor/api/audit/export?'+params,{
         headers:{Authorization:'Bearer '+_tok}
@@ -1423,37 +1432,75 @@ function ExportButton({disabled,setExporting,filterAction,filterDir}){
     setExporting(false);
   };
 
+  const dtStyle={
+    width:'100%',padding:'4px 6px',background:'var(--bg)',
+    border:'1px solid var(--b2)',borderRadius:'var(--r)',
+    color:'var(--t2)',fontSize:10,fontFamily:'var(--font)',
+    colorScheme:'dark',outline:'none',boxSizing:'border-box'
+  };
+
+  const sectionHdr=(label)=>(
+    <div style={{padding:'6px 10px',fontSize:10,color:'var(--t3)',
+      borderBottom:'1px solid var(--b1)',textTransform:'uppercase',letterSpacing:'.05em'}}>
+      {label}
+    </div>
+  );
+
   return(
     <div ref={ref} style={{position:'relative'}}>
       <button className="pause-btn" disabled={disabled} onClick={()=>setOpen(o=>!o)}>
-        {disabled?'Exporting…':'⬇ Export'}
+        {disabled?'Exporting…':'⬇ Export'+(hasRange?' ·':'')}
       </button>
       {open&&(
         <div style={{position:'absolute',right:0,top:'100%',marginTop:4,zIndex:200,
           background:'var(--s1)',border:'1px solid var(--b2)',borderRadius:'var(--r)',
-          minWidth:180,boxShadow:'0 8px 24px rgba(0,0,0,.4)',overflow:'hidden'}}>
-          <div style={{padding:'6px 10px',fontSize:10,color:'var(--t3)',borderBottom:'1px solid var(--b1)',textTransform:'uppercase',letterSpacing:'.05em'}}>
-            Format &amp; row limit
+          width:240,boxShadow:'0 8px 24px rgba(0,0,0,.4)'}}>
+
+          {/* ── Date range ── */}
+          {sectionHdr('Date range (optional · UTC)')}
+          <div style={{padding:'8px 10px',display:'grid',gridTemplateColumns:'auto 1fr',gap:'4px 8px',alignItems:'center'}}>
+            <span style={{fontSize:10,color:'var(--t3)'}}>From</span>
+            <input type="datetime-local" value={fromDt} onChange={e=>setFromDt(e.target.value)}
+              style={dtStyle}/>
+            <span style={{fontSize:10,color:'var(--t3)'}}>To</span>
+            <input type="datetime-local" value={toDt} onChange={e=>setToDt(e.target.value)}
+              style={dtStyle}/>
+            {hasRange&&(
+              <button onClick={()=>{setFromDt('');setToDt('');}}
+                style={{gridColumn:'1/-1',marginTop:2,padding:'3px 0',background:'transparent',
+                  border:'none',fontSize:10,color:'var(--t3)',cursor:'pointer',
+                  fontFamily:'var(--font)',textAlign:'left'}}>
+                ✕ Clear dates
+              </button>
+            )}
           </div>
+
+          {/* ── Format + limit ── */}
+          {sectionHdr('Format & row limit')}
           {[
-            ['CSV · last 1,000',  'csv',    1000],
-            ['CSV · last 10,000', 'csv',   10000],
-            ['CSV · all rows',    'csv',   100000],
-            ['NDJSON · last 1,000', 'ndjson', 1000],
-            ['NDJSON · all rows',   'ndjson', 100000],
+            ['CSV · last 1,000',     'csv',    1000],
+            ['CSV · last 10,000',    'csv',   10000],
+            ['CSV · all rows',       'csv',   100000],
+            ['NDJSON · last 1,000',  'ndjson', 1000],
+            ['NDJSON · all rows',    'ndjson', 100000],
           ].map(([label,fmt,lim])=>(
             <button key={label} onClick={()=>doExport(fmt,lim)}
-              style={{display:'block',width:'100%',padding:'8px 12px',background:'transparent',
-                border:'none',textAlign:'left',fontSize:11,color:'var(--t2)',cursor:'pointer',
-                fontFamily:'var(--font)'}}
+              style={{display:'block',width:'100%',padding:'7px 12px',background:'transparent',
+                border:'none',textAlign:'left',fontSize:11,color:'var(--t2)',
+                cursor:'pointer',fontFamily:'var(--font)'}}
               onMouseEnter={e=>e.target.style.background='var(--bg)'}
               onMouseLeave={e=>e.target.style.background='transparent'}>
               {label}
             </button>
           ))}
-          {filterAction&&filterAction!=='ALL'&&(
-            <div style={{padding:'6px 10px',fontSize:10,color:'var(--yellow)',borderTop:'1px solid var(--b1)'}}>
-              Filtered to: {filterAction} only
+
+          {/* ── Active filters summary ── */}
+          {(filterAction&&filterAction!=='ALL'||hasRange)&&(
+            <div style={{padding:'5px 10px',fontSize:10,color:'var(--yellow)',
+              borderTop:'1px solid var(--b1)',lineHeight:1.6}}>
+              {filterAction&&filterAction!=='ALL'&&<div>Action: {filterAction}</div>}
+              {fromDt&&<div>From: {fromDt.replace('T',' ')}</div>}
+              {toDt&&<div>To: {toDt.replace('T',' ')}</div>}
             </div>
           )}
         </div>

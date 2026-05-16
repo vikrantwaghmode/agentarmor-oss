@@ -1,0 +1,68 @@
+name: Publish Helm Chart (OCI)
+
+on:
+  push:
+    tags: ["v*"]          # publish on every release tag, e.g. v0.2.0
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+env:
+  REGISTRY: ghcr.io
+  CHART_DIR: helm/agentarmor
+
+jobs:
+  lint-package-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.16.0"
+
+      - name: Lint chart
+        run: helm lint ${{ env.CHART_DIR }}
+
+      - name: Template smoke-test
+        run: |
+          helm template test ${{ env.CHART_DIR }} \
+            --set auth.adminToken=test \
+            --set auth.userToken=test \
+            > /dev/null
+
+      - name: Log in to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          helm registry login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package chart
+        id: package
+        run: |
+          VERSION=$(grep '^version:' ${{ env.CHART_DIR }}/Chart.yaml | awk '{print $2}')
+          helm package ${{ env.CHART_DIR }} --destination /tmp/chart
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tgz=/tmp/chart/agentarmor-${VERSION}.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Push to OCI registry
+        run: |
+          helm push ${{ steps.package.outputs.tgz }} \
+            oci://${{ env.REGISTRY }}/${{ github.repository_owner }}
+
+      - name: Print install command
+        run: |
+          echo ""
+          echo "✅ Chart published. Install with:"
+          echo ""
+          echo "  helm install agentarmor \\"
+          echo "    oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/agentarmor \\"
+          echo "    --version ${{ steps.package.outputs.version }} \\"
+          echo "    --set auth.adminToken=changeme \\"
+          echo "    --set auth.userToken=readonly"
+          echo ""
