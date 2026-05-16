@@ -2277,7 +2277,14 @@ function InfraTab({stats,role}){
 
   const load=()=>api('infra').then(r=>r.json()).then(d=>{
     setInfra(d);
-    setForm(d.config||{database:{url:''},redis:{url:''},acme:{domain:'',email:'',staging:false},metrics:{token:''}});
+    const c=d.config||{};
+    setForm({
+      database:{url:'',...(c.database||{})},
+      redis:{url:'',...(c.redis||{})},
+      acme:{domain:'',email:'',staging:false,...(c.acme||{})},
+      metrics:{token:'',...(c.metrics||{})},
+      otel:{enabled:false,endpoint:'',service_name:'agentarmor',insecure:false,...(c.otel||{})},
+    });
   }).catch(()=>{});
   useEffect(()=>{if(isAdmin)load();},[isAdmin]);
 
@@ -2547,8 +2554,201 @@ function InfraTab({stats,role}){
             {saving?'Saving…':'Save & Apply'}
           </button>
         </div>
+
+        {/* OpenTelemetry — full-width editable card inside the Save & Apply form */}
+        {form&&card('OpenTelemetry Tracing',(
+          <div>
+            {/* live status badge */}
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
+              <span style={{width:8,height:8,borderRadius:'50%',display:'inline-block',
+                background:stats?.otel_enabled?'var(--green)':'var(--b2)'}}/>
+              <span style={{fontSize:11,color:stats?.otel_enabled?'var(--green)':'var(--t3)'}}>
+                {stats?.otel_enabled?`Active — sending spans to ${stats.otel_endpoint}`:'Inactive'}
+              </span>
+            </div>
+
+            {/* enabled toggle */}
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,
+              padding:'10px 12px',background:'var(--bg)',borderRadius:'var(--r)',
+              border:`1px solid ${form.otel?.enabled?'rgba(139,92,246,.4)':'var(--b1)'}`}}>
+              <input type="checkbox" id="otel-enabled" checked={!!form.otel?.enabled}
+                onChange={e=>set('otel','enabled',e.target.checked)} disabled={!isAdmin}/>
+              <label htmlFor="otel-enabled" style={{fontSize:12,color:'var(--t2)',fontWeight:600,cursor:'pointer'}}>
+                Enable OpenTelemetry tracing
+              </label>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,
+                background:'rgba(74,222,128,.15)',color:'var(--green)',fontWeight:700,marginLeft:'auto'}}>
+                HOT RELOAD
+              </span>
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+              <div>
+                {lbl('OTLP endpoint','','hot')}
+                {inp(form.otel?.endpoint,v=>set('otel','endpoint',v),'text','http://jaeger:4318')}
+                <div style={{fontSize:10,color:'var(--t3)',marginTop:3}}>
+                  Jaeger · Grafana Tempo · Honeycomb · Datadog Agent
+                </div>
+              </div>
+              <div>
+                {lbl('Service name','','hot')}
+                {inp(form.otel?.service_name,v=>set('otel','service_name',v),'text','agentarmor')}
+                <div style={{fontSize:10,color:'var(--t3)',marginTop:3}}>
+                  Identifies this proxy in your tracing backend
+                </div>
+              </div>
+            </div>
+
+            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8}}>
+              <input type="checkbox" id="otel-insecure" checked={!!form.otel?.insecure}
+                onChange={e=>set('otel','insecure',e.target.checked)} disabled={!isAdmin}/>
+              <label htmlFor="otel-insecure" style={{fontSize:11,color:'var(--t3)',cursor:'pointer'}}>
+                Skip TLS verification (<code style={{color:'var(--yellow)'}}>OTEL_INSECURE</code>) — dev/internal only
+              </label>
+            </div>
+
+            <div style={{marginTop:12,padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--r)',fontSize:11,color:'var(--t3)'}}>
+              Each request emits an <code style={{color:'var(--yellow)'}}>agentarmor.request</code> span with an <code style={{color:'var(--yellow)'}}>agentarmor.scan</code> child span.
+              Attributes: <code style={{color:'var(--t2)'}}>http.method · http.path · agentarmor.tenant_id · agentarmor.action · agentarmor.rule</code>.
+              The trace ID is returned in the <code style={{color:'var(--yellow)'}}>X-Trace-ID</code> response header for log correlation.
+            </div>
+          </div>
+        ))}
+
+        {/* WASM Filters section */}
+        <WASMFiltersCard/>
         </>
       )}
+    </div>
+  );
+}
+
+function WASMFiltersCard(){
+  const[data,setData]=useState(null);
+  const[reloading,setReloading]=useState(false);
+  const[uploading,setUploading]=useState(false);
+  const[uploadErr,setUploadErr]=useState('');
+  const[dragOver,setDragOver]=useState(false);
+  const fileRef=React.useRef();
+
+  const load=()=>api('wasm').then(r=>r.json()).then(setData).catch(()=>{});
+  useEffect(()=>{load();},[]);
+
+  const reload=async()=>{
+    setReloading(true);
+    const d=await api('wasm/reload',{method:'POST'}).then(r=>r.json()).catch(()=>null);
+    if(d)setData(d);
+    setReloading(false);
+  };
+
+  const toggle=async(name,enabled)=>{
+    await api('wasm/toggle',{method:'POST',body:JSON.stringify({name,enabled})});
+    load();
+  };
+
+  const del=async(name)=>{
+    if(!confirm('Delete filter "'+name+'"?'))return;
+    const d=await fetch('/armor/api/wasm/delete/'+encodeURIComponent(name),{
+      method:'DELETE',headers:{Authorization:'Bearer '+_tok}
+    }).then(r=>r.json()).catch(()=>null);
+    if(d)setData(d);
+  };
+
+  const upload=async(file)=>{
+    if(!file)return;
+    if(!file.name.endsWith('.wasm')){setUploadErr('Only .wasm files are accepted.');return;}
+    setUploading(true);setUploadErr('');
+    const fd=new FormData();
+    fd.append('file',file);
+    try{
+      const r=await fetch('/armor/api/wasm/upload',{
+        method:'POST',headers:{Authorization:'Bearer '+_tok},body:fd
+      });
+      const d=await r.json();
+      if(d.error){setUploadErr(d.error);}
+      else{setData(d);}
+    }catch(e){setUploadErr(String(e));}
+    setUploading(false);
+  };
+
+  const onDrop=e=>{e.preventDefault();setDragOver(false);upload(e.dataTransfer.files[0]);};
+
+  const btnSm={fontSize:11,padding:'3px 9px',border:'1px solid var(--b2)',borderRadius:'var(--r)',
+    color:'var(--t2)',background:'var(--bg)',cursor:'pointer',fontFamily:'var(--font)'};
+
+  return(
+    <div style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:18,background:'var(--s1)',marginTop:12}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.05em'}}>
+          WASM Filters
+          {data?.filters?.length>0&&<span style={{marginLeft:8,fontSize:10,color:'var(--t3)',fontWeight:400,textTransform:'none'}}>
+            {data.filters.length} loaded
+          </span>}
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button onClick={()=>fileRef.current?.click()} disabled={uploading} style={btnSm}>
+            {uploading?'Uploading…':'⬆ Upload .wasm'}
+          </button>
+          <button onClick={reload} disabled={reloading} style={btnSm}>
+            {reloading?'…':'↺ Reload'}
+          </button>
+        </div>
+      </div>
+
+      {/* hidden file input */}
+      <input ref={fileRef} type="file" accept=".wasm" style={{display:'none'}}
+        onChange={e=>{upload(e.target.files[0]);e.target.value='';}}/>
+
+      {/* drag-and-drop zone */}
+      <div onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+           onDragLeave={()=>setDragOver(false)}
+           onDrop={onDrop}
+           onClick={()=>fileRef.current?.click()}
+           style={{border:`2px dashed ${dragOver?'var(--purple)':'var(--b2)'}`,borderRadius:'var(--r)',
+             padding:'14px',marginBottom:12,textAlign:'center',cursor:'pointer',
+             background:dragOver?'rgba(139,92,246,.05)':'transparent',transition:'all .15s'}}>
+        <div style={{fontSize:11,color:'var(--t3)'}}>
+          {dragOver?'Drop to upload':'Drag & drop a <strong>.wasm</strong> file here, or click to browse'}
+        </div>
+        <div style={{fontSize:10,color:'var(--t3)',marginTop:4,opacity:.7}}>
+          Compiled WASI module (Go, Rust, C, AssemblyScript) · max 10 MB · auto-reloads on upload
+        </div>
+      </div>
+
+      {uploadErr&&<div style={{fontSize:11,color:'var(--red)',marginBottom:8}}>❌ {uploadErr}</div>}
+
+      {!data
+        ?<div style={{fontSize:11,color:'var(--t3)'}}>Loading…</div>
+        :!data.filters?.length
+          ?<div style={{fontSize:11,color:'var(--t3)',padding:'4px 0'}}>
+             No filters loaded yet. Upload a <code style={{color:'var(--yellow)'}}>*.wasm</code> file above
+             or see <code>wasm-filters/README.md</code> for language examples.
+           </div>
+          :data.filters.map(f=>(
+            <div key={f.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+              padding:'8px 0',borderBottom:'1px solid var(--b1)'}}>
+              <div>
+                <span style={{fontSize:11,color:'var(--t2)',fontWeight:600}}>{f.name}</span>
+                <span style={{fontSize:10,color:'var(--t3)',marginLeft:8}}>
+                  uploaded {new Date(f.loaded_at).toLocaleTimeString()}
+                </span>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}}>
+                  <input type="checkbox" checked={f.enabled}
+                    onChange={e=>toggle(f.name,e.target.checked)}/>
+                  <span style={{fontSize:10,color:f.enabled?'var(--green)':'var(--t3)'}}>
+                    {f.enabled?'enabled':'disabled'}
+                  </span>
+                </label>
+                <button onClick={()=>del(f.name)}
+                  style={{...btnSm,color:'var(--red)',borderColor:'rgba(239,68,68,.3)'}}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))
+      }
     </div>
   );
 }

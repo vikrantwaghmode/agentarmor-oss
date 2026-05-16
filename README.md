@@ -75,6 +75,8 @@ AgentArmor is built around three principles:
 | TLS by Default | — | Transport | Auto-generated self-signed cert on first run; HTTPS on `:8443`, HTTP→HTTPS redirect on `:8080` |
 | SSO / OIDC | — | Auth | Any OIDC provider (Google, Microsoft, Okta, Auth0, Keycloak); role mapping from groups; configurable from the Auth tab without restart |
 | Multi-tenancy | — | Isolate | Per-tenant policies, tokens, audit trails, rate limits, and sessions — routed via `X-Tenant-ID` header or Bearer token; managed from Tenants tab (08) |
+| WASM Filters | Both | Block | Drop any `.wasm` file into `./wasm-filters/`; runs on every request, hot-reloaded from dashboard; any WASI language (Go, Rust, C, AssemblyScript) |
+| OpenTelemetry Traces | — | Observe | One span per request + scan child span; OTLP/HTTP to Jaeger / Tempo / Honeycomb; `X-Trace-ID` response header; zero new Go deps |
 | Infrastructure Config | — | Config | `infra.yaml` dashboard (tab 10) — configure PostgreSQL, Redis, ACME, metrics token with hot-reload; **Restart System** button with "now or later" dialog |
 | Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; 10 tabs covering health, policy, audit, firewall, skills, repave, SSO, tenants, logs, and infrastructure |
 

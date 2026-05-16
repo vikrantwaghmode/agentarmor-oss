@@ -1,13 +1,13 @@
 package main
 
 // Infrastructure configuration — hot-reloadable settings for database,
-// Redis, TLS/ACME, and Prometheus metrics.
+// Redis, TLS/ACME, Prometheus metrics, and OpenTelemetry tracing.
 //
 // Stored in infra.yaml (volume-mounted). Admins can edit via the
 // Infrastructure tab (10) in the dashboard; changes are applied immediately
 // where possible and marked "restart required" where not.
 //
-// Hot-reloadable:  Redis URL, Metrics token
+// Hot-reloadable:  Redis URL, Metrics token, OpenTelemetry config
 // Restart required: Database URL, ACME domain / email
 
 import (
@@ -23,6 +23,14 @@ type InfraConfig struct {
 	Redis    InfraRedis    `yaml:"redis"    json:"redis"`
 	ACME     InfraACME     `yaml:"acme"     json:"acme"`
 	Metrics  InfraMetrics  `yaml:"metrics"  json:"metrics"`
+	OTel     InfraOTel     `yaml:"otel"     json:"otel"`
+}
+
+type InfraOTel struct {
+	Enabled     bool   `yaml:"enabled"      json:"enabled"`
+	Endpoint    string `yaml:"endpoint"     json:"endpoint"`
+	ServiceName string `yaml:"service_name" json:"service_name"`
+	Insecure    bool   `yaml:"insecure"     json:"insecure"`
 }
 
 type InfraDatabase struct {
@@ -89,6 +97,11 @@ func applyInfraEnvVars(cfg InfraConfig) {
 	set("ACME_DOMAIN", cfg.ACME.Domain)
 	set("ACME_EMAIL", cfg.ACME.Email)
 	set("METRICS_TOKEN", cfg.Metrics.Token)
+	set("OTEL_EXPORTER_OTLP_ENDPOINT", cfg.OTel.Endpoint)
+	set("OTEL_SERVICE_NAME", cfg.OTel.ServiceName)
+	if cfg.OTel.Insecure {
+		os.Setenv("OTEL_INSECURE", "true")
+	}
 	if cfg.ACME.Staging {
 		os.Setenv("ACME_STAGING", "true")
 	} else {
@@ -142,6 +155,12 @@ func hotApplyInfra(old, new InfraConfig) (restartReasons, hotApplied []string) {
 		}
 		log.Printf("📊 Metrics token updated")
 		hotApplied = append(hotApplied, "Metrics scrape token")
+	}
+
+	// OTel — fully hot-reloadable: update globals, sender goroutine picks them up
+	if new.OTel != old.OTel {
+		ReinitOTel(new.OTel)
+		hotApplied = append(hotApplied, "OpenTelemetry tracing")
 	}
 
 	// Database — requires restart

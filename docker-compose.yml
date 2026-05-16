@@ -28,6 +28,7 @@ services:
       - ./certs:/app/certs              # TLS certs — auto-generated if empty, replace for production
       - ./tenants:/app/tenants          # Per-tenant configs — created from dashboard or by hand
       - ./skills:/app/skills            # Live-editable skill definitions + RAG docs
+      - ./wasm-filters:/app/wasm-filters # Custom WASM filters — hot-reloaded from dashboard
     restart: unless-stopped
     env_file:
       - .env
@@ -90,6 +91,17 @@ services:
   #     interval: 5s
   #     timeout: 3s
   #     retries: 10
+
+  # ── Optional: Jaeger for OpenTelemetry traces ─────────────────────────────────
+  # Uncomment and set OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 in .env
+  #
+  # jaeger:
+  #   image: jaegertracing/all-in-one:latest
+  #   ports:
+  #     - "16686:16686"   # Jaeger UI
+  #     - "4318:4318"     # OTLP/HTTP receiver
+  #   environment:
+  #     - COLLECTOR_OTLP_ENABLED=true
 
 volumes:
   ollama_data:

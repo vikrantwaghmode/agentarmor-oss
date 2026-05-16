@@ -2347,6 +2347,14 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		}
 	}
 
+	// WASM filters — run after all built-in scanners
+	if wasmEnabled && !result.Blocked {
+		if blocked, rule := runWASMFilters(contentToScan, direction, sessionKey, tnt.Meta.ID); blocked {
+			result.Blocked = true
+			result.RuleMatched = rule
+		}
+	}
+
 	return result
 }
 
@@ -2442,6 +2450,9 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			"acme_domain":       os.Getenv("ACME_DOMAIN"),
 			"tls_mode":          tlsMode,
 			"infra_needs_restart": infraNeedsRestart,
+			"otel_enabled":        otelEnabled,
+			"otel_endpoint":       otelEndpoint,
+			"wasm_filters":        len(ListWASMFilters()),
 			"rule_counts": map[string]int{
 				"prompt_injection":  ruleCounts.PromptInjection,
 				"secrets":           ruleCounts.Secrets,
@@ -3004,6 +3015,118 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			out = []string{}
 		}
 		json.NewEncoder(w).Encode(out)
+
+	// GET /armor/api/wasm — list loaded WASM filters
+	case endpoint == "wasm" && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled": wasmEnabled,
+			"filters": ListWASMFilters(),
+		})
+
+	// POST /armor/api/wasm/reload — rescan wasm-filters/ and recompile
+	case endpoint == "wasm/reload" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		if err := ReloadWASM(); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      true,
+			"filters": ListWASMFilters(),
+		})
+
+	// POST /armor/api/wasm/toggle — enable or disable a named filter
+	case endpoint == "wasm/toggle" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		ToggleWASMFilter(body.Name, body.Enabled)
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
+	// POST /armor/api/wasm/upload — upload a .wasm file, save to wasm-filters/, reload (admin only)
+	case endpoint == "wasm/upload" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+			http.Error(w, `{"error":"file too large (max 10 MB)"}`, http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, `{"error":"missing file field"}`, http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		name := filepath.Base(header.Filename)
+		if filepath.Ext(name) != ".wasm" {
+			http.Error(w, `{"error":"only .wasm files are accepted"}`, http.StatusBadRequest)
+			return
+		}
+		if strings.ContainsAny(name, "/\\..") && name != filepath.Clean(name) {
+			http.Error(w, `{"error":"invalid filename"}`, http.StatusBadRequest)
+			return
+		}
+
+		os.MkdirAll(wasmFilterDir, 0755) //nolint:errcheck
+		dst, err := os.Create(filepath.Join(wasmFilterDir, name))
+		if err != nil {
+			http.Error(w, `{"error":"could not save file"}`, http.StatusInternalServerError)
+			return
+		}
+		if _, err = io.Copy(dst, file); err != nil {
+			dst.Close()
+			http.Error(w, `{"error":"write failed"}`, http.StatusInternalServerError)
+			return
+		}
+		dst.Close()
+
+		ReloadWASM() //nolint:errcheck
+		log.Printf("🔌 WASM filter uploaded via dashboard: %s", name)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      true,
+			"filters": ListWASMFilters(),
+		})
+
+	// DELETE /armor/api/wasm/delete/<name> — remove a filter file and reload (admin only)
+	case strings.HasPrefix(endpoint, "wasm/delete/") && r.Method == http.MethodDelete:
+		if role != "admin" {
+			http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+			return
+		}
+		name := filepath.Base(strings.TrimPrefix(endpoint, "wasm/delete/"))
+		if name == "" || name == "." || filepath.Ext(name) != ".wasm" {
+			http.Error(w, `{"error":"invalid filter name"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.Remove(filepath.Join(wasmFilterDir, name)); err != nil {
+			http.Error(w, `{"error":"could not delete file"}`, http.StatusInternalServerError)
+			return
+		}
+		ReloadWASM() //nolint:errcheck
+		log.Printf("🗑  WASM filter deleted via dashboard: %s", name)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      true,
+			"filters": ListWASMFilters(),
+		})
 
 	// GET /armor/api/infra — returns current infra config + live status (admin only)
 	case endpoint == "infra" && r.Method == http.MethodGet:
@@ -3612,8 +3735,10 @@ func main() {
 		log.Fatalf("❌ OIDC init failed: %v", err)
 	}
 
+	initOTel()
 	loadInfraConfig() // must run before initRedis/initAuditDB so infra.yaml overrides .env
 	initRedis()
+	initWASM()
 	initAuditDB()
 	InitTenants() // must run after initAuditDB so tenant handlers have the DB
 	loadPolicy()
@@ -3669,8 +3794,11 @@ func main() {
 	log.Println("🔌 WebSocket scanning: ENABLED")
 	log.Println("📊 Dashboard: https://localhost:8443/armor/")
 
+	// Wrap the default mux with OTel tracing middleware (no-op when OTel is disabled)
+	mux := otelMiddleware(http.DefaultServeMux)
+
 	// ACME / Let's Encrypt takes priority when ACME_DOMAIN is set
-	if startTLS(nil) {
+	if startTLS(mux) {
 		return // startTLS blocks; returns only if ACME domain not configured
 	}
 
@@ -3691,10 +3819,10 @@ func main() {
 			log.Fatal(http.ListenAndServe(":8080", redirect))
 		}()
 		log.Printf("🔒 TLS proxy listening on https://0.0.0.0:8443")
-		log.Fatal(http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil))
+		log.Fatal(http.ListenAndServeTLS(":8443", tlsCert, tlsKey, mux))
 	} else {
 		log.Printf("⚠️  TLS_CERT / TLS_KEY not set — falling back to plain HTTP on :8080")
-		log.Fatal(http.ListenAndServe(":8080", nil))
+		log.Fatal(http.ListenAndServe(":8080", mux))
 	}
 }
 

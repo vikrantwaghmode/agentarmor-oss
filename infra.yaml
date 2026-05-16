@@ -27,3 +27,11 @@ metrics:
   # Leave empty to allow unauthenticated scraping (fine for internal networks).
   # Hot-reloaded — no restart needed.
   token: ""
+
+otel:
+  # OpenTelemetry distributed tracing. Hot-reloaded — no restart needed.
+  # Compatible with Jaeger, Grafana Tempo, Honeycomb, Datadog Agent (OTLP/HTTP).
+  enabled: false
+  endpoint: ""         # e.g. http://jaeger:4318
+  service_name: "agentarmor"
+  insecure: false      # set true to skip TLS verification (dev/internal only)
