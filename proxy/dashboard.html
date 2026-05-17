@@ -354,6 +354,21 @@ const fmtPct=(a,t)=>t>0?((a/t)*100).toFixed(1)+'%':'—';
 const parseSec=s=>{if(!s)return 1;const m=s.match(/(\d+)h(\d+)m(\d+)s/);return m?+m[1]*3600+ +m[2]*60+ +m[3]:1;};
 const ago=ts=>{if(!ts)return'—';const s=Math.floor((Date.now()-new Date(ts.replace(' ','T')))/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';return Math.floor(s/3600)+'h ago';};
 
+// Timestamp helpers — SQLite stores UTC without 'Z', PostgreSQL stores with TZ.
+// Always parse as UTC then convert to the requested display mode.
+const parseTs=ts=>{if(!ts)return null;const s=ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z';const d=new Date(s);return isNaN(d)?null:d;};
+const localTZAbbr=(()=>{try{return new Date().toLocaleTimeString('en-US',{timeZoneName:'short'}).split(' ').pop();}catch(e){return'Local';}})();
+const formatTs=(ts,mode='local',showDate=true)=>{
+  const d=parseTs(ts);if(!d)return ts||'—';
+  if(mode==='utc'){
+    const s=d.toISOString().replace('T',' ').slice(0,19);
+    return showDate?s:s.slice(11);
+  }
+  const opts={hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'};
+  if(showDate)Object.assign(opts,{year:'numeric',month:'2-digit',day:'2-digit'});
+  return d.toLocaleString('sv-SE',opts).replace('T',' ');
+};
+
 /* ═══ Sparkline ═══ */
 function Sparkline({data,color='#ef4444',w=80,h=24}){
   if(!data||!data.length)return<svg width={w} height={h}><line x1="4" y1={h/2} x2={w-4} y2={h/2} stroke="#2a2a2a" strokeWidth="1.5"/></svg>;
@@ -447,11 +462,11 @@ function AreaChart({audit}){
 
 /* ═══ Ticker ═══ */
 function Ticker({events}){
-  const items=useMemo(()=>(events||[]).slice(0,24),[events]);
+  const items=useMemo(()=>(events||[]).filter(e=>e.action!=='ALLOWED').slice(0,24),[events]);
   if(!items.length)return(
     <div className="ticker">
       <div className="ticker-label"><span className="dot"/><span>LIVE FEED</span></div>
-      <span style={{padding:'0 16px',fontSize:11,color:'var(--t3)'}}>No events yet — send a request to see activity</span>
+      <span style={{padding:'0 16px',fontSize:11,color:'var(--t3)'}}>Nothing blocked or redacted yet — all traffic passing cleanly</span>
     </div>
   );
   const doubled=[...items,...items];
@@ -465,7 +480,7 @@ function Ticker({events}){
             const cls=a==='blocked'?'tick-blocked':a==='redacted'?'tick-redacted':'tick-allowed';
             return(
               <span key={i} className="tick-item">
-                <span className="tick-time">{(e.timestamp||'').slice(11,19)}</span>
+                <span className="tick-time">{formatTs(e.timestamp,'local',false)} <span style={{opacity:.5,fontSize:9}}>{localTZAbbr}</span></span>
                 <span className="tick-sep">·</span>
                 <span className={cls}>{e.action}</span>
                 <span className="tick-sep">{e.rule_matched||'—'}</span>
@@ -481,6 +496,31 @@ function Ticker({events}){
 }
 
 /* ═══ HEALTH ═══ */
+/* ── ExpandablePayload — click-to-expand truncated text ── */
+function ExpandablePayload({text,max=90,mono=false}){
+  const[open,setOpen]=useState(false);
+  if(!text||text==='—'||text==='')return<span style={{color:'var(--t3)'}}>—</span>;
+  const long=text.length>max;
+  const base={display:'block',wordBreak:'break-all',cursor:long?'pointer':'default'};
+  const monoStyle=mono?{fontFamily:'var(--mono)',fontSize:10}:{fontSize:11};
+  return(
+    <span onClick={e=>{e.stopPropagation();if(long)setOpen(o=>!o);}}
+      style={{...base,...monoStyle,color:'var(--t3)'}}
+      title={long&&!open?'Click to expand':undefined}>
+      {open
+        ?<span>
+            <span style={{color:'var(--t2)'}}>{text}</span>
+            <span style={{marginLeft:6,fontSize:10,color:'var(--purple)',opacity:.7}}>▲ collapse</span>
+          </span>
+        :<span>
+            {long?text.slice(0,max)+'…':text}
+            {long&&<span style={{marginLeft:4,fontSize:10,color:'var(--purple)',opacity:.7}}>▼ expand</span>}
+          </span>
+      }
+    </span>
+  );
+}
+
 function InfraBadge({label,value,ok}){
   const col=ok===true?'var(--green)':ok===false?'var(--red)':'var(--t2)';
   return(
@@ -570,16 +610,20 @@ function Health({data,recentBlocks}){
         </div>
         <div className="col-side">
           <div className="recent-title"><span className="live-dot"/><span>Recent Blocks &amp; Redactions</span></div>
-          {!recentBlocks.length?<div className="empty" style={{padding:'20px 0',textAlign:'left'}}>No events yet.</div>
-          :recentBlocks.map(e=>(
+          {!recentBlocks.length
+            ?<div style={{padding:'20px 0',textAlign:'left'}}>
+               <div style={{fontSize:13,color:'var(--green)',marginBottom:4}}>✓ Nothing blocked yet</div>
+               <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.6}}>All traffic is passing cleanly. Blocks and redactions will appear here in real time.</div>
+             </div>
+            :recentBlocks.map(e=>(
             <div key={e.id} className="event-card">
-              <div className="event-time">{(e.timestamp||'').slice(11,19)}</div>
+              <div className="event-time">{formatTs(e.timestamp,'local',false)} <span style={{opacity:.6}}>{localTZAbbr}</span></div>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
                 <span className={`badge badge-${(e.action||'').toLowerCase()}`}>{e.action}</span>
                 <span className="event-rule">{(e.rule_matched||'').slice(0,40)}</span>
               </div>
-              <div className="event-payload">{e.payload_snippet||'—'}</div>
-              <div className="event-ip">{e.direction}</div>
+              <ExpandablePayload text={e.payload_snippet} max={70}/>
+              <div className="event-ip" style={{marginTop:3}}>{e.direction}</div>
             </div>
           ))}
         </div>
@@ -1100,7 +1144,7 @@ function FeedStatus({url}){
   return(
     <div style={{display:'flex',gap:16,fontSize:10,color:'var(--t3)',marginTop:2}}>
       <span style={{color:status.last_error?'var(--red)':'var(--green)'}}>{status.last_error?'✗ '+status.last_error:'✓ '+status.rule_count+' rules active'}</span>
-      {status.last_fetched&&<span>last: {status.last_fetched.slice(11,19)}</span>}
+      {status.last_fetched&&<span>last: {formatTs(status.last_fetched,'local',false)} {localTZAbbr}</span>}
     </div>
   );
 }
@@ -1514,6 +1558,10 @@ function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefresh
   const[f,setF]=useState('ALL');
   const[dir,setDir]=useState('ALL');
   const[exporting,setExporting]=useState(false);
+  const[expanded,setExpanded]=useState(()=>new Set());
+  const toggle=id=>setExpanded(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+  const[tzMode,setTzMode]=useState('local');
+  const tzLabel=tzMode==='utc'?'UTC':localTZAbbr;
   const[paused,setPaused]=useState(false);
   const rows=useMemo(()=>{
     let d=events||[];
@@ -1570,20 +1618,61 @@ function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefresh
       <div className="audit-table-wrap">
         <table className="audit-table">
           <thead><tr>
-            <th>Time</th><th>Direction</th><th>Action</th><th>Rule</th><th>Payload</th><th>Client</th>
+            <th>
+              <span style={{display:'flex',alignItems:'center',gap:6}}>
+                Time
+                <button onClick={e=>{e.stopPropagation();setTzMode(m=>m==='local'?'utc':'local');}}
+                  style={{padding:'1px 6px',background:'var(--bg)',border:'1px solid var(--b2)',
+                    borderRadius:3,fontSize:9,color:'var(--purple)',cursor:'pointer',
+                    fontFamily:'var(--font)',fontWeight:700,letterSpacing:'.04em'}}>
+                  {tzLabel}
+                </button>
+              </span>
+            </th>
+            <th>Direction</th><th>Action</th><th>Rule</th><th>Payload</th><th>Client</th>
           </tr></thead>
           <tbody>
             {!rows.length&&<tr><td colSpan="6" className="empty">No events match.</td></tr>}
-            {rows.map(e=>(
-              <tr key={e.id}>
-                <td className="col-time">{(e.timestamp||'').replace('T',' ').slice(0,19)}</td>
-                <td className="col-dir"><span style={{fontSize:10,color:'var(--t3)'}}>{(e.direction||'').includes('Request')?'↓ IN':'↑ OUT'}</span></td>
-                <td className="col-action"><span className={`badge badge-${(e.action||'').toLowerCase()}`}>{e.action}</span></td>
-                <td className="col-rule">{e.rule_matched||'—'}</td>
-                <td className="col-payload">{e.payload_snippet||'—'}</td>
-                <td className="col-client">{e.client_ip||e.session_key||'—'}</td>
-              </tr>
-            ))}
+            {rows.map(e=>{
+              const isOpen=expanded.has(e.id);
+              return(
+                <React.Fragment key={e.id}>
+                  <tr onClick={()=>toggle(e.id)} style={{cursor:'pointer'}}
+                    title="Click to expand payload">
+                    <td className="col-time">{formatTs(e.timestamp,tzMode)}</td>
+                    <td className="col-dir"><span style={{fontSize:10,color:'var(--t3)'}}>{(e.direction||'').includes('Request')?'↓ IN':'↑ OUT'}</span></td>
+                    <td className="col-action"><span className={`badge badge-${(e.action||'').toLowerCase()}`}>{e.action}</span></td>
+                    <td className="col-rule">{e.rule_matched||'—'}</td>
+                    <td className="col-payload" style={{maxWidth:260}}>
+                      <span style={{color:'var(--t3)',fontSize:11,fontFamily:'var(--mono)'}}>
+                        {e.payload_snippet
+                          ?(e.payload_snippet.length>80?e.payload_snippet.slice(0,80)+'…':e.payload_snippet)
+                          :'—'}
+                        {e.payload_snippet&&e.payload_snippet.length>80&&
+                          <span style={{marginLeft:4,fontSize:10,color:'var(--purple)',opacity:.7}}>{isOpen?'▲':'▼'}</span>}
+                      </span>
+                    </td>
+                    <td className="col-client">{e.client_ip||e.session_key||'—'}</td>
+                  </tr>
+                  {isOpen&&(
+                    <tr style={{background:'var(--bg)'}}>
+                      <td colSpan="6" style={{padding:'10px 14px 14px',borderBottom:'1px solid var(--b2)'}}>
+                        <div style={{fontSize:10,color:'var(--t3)',marginBottom:6,textTransform:'uppercase',letterSpacing:'.06em'}}>
+                          Full payload · {e.direction} · {formatTs(e.timestamp,tzMode)} {tzLabel}
+                        </div>
+                        <pre style={{margin:0,fontFamily:'var(--mono)',fontSize:11,color:'var(--t2)',
+                          whiteSpace:'pre-wrap',wordBreak:'break-all',lineHeight:1.6,
+                          padding:'10px 12px',background:'var(--s1)',borderRadius:'var(--r)',
+                          border:'1px solid var(--b2)',maxHeight:320,overflowY:'auto'}}>
+                          {e.payload_snippet||'(no payload recorded)'}
+                        </pre>
+                        {e.session_key&&<div style={{marginTop:6,fontSize:10,color:'var(--t3)'}}>Session: {e.session_key} · IP: {e.client_ip||'—'} · Rule: {e.rule_matched||'—'}</div>}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1717,12 +1806,16 @@ function Firewall({fw,audit,role,onFwChange}){
       <div className="col-side">
         <div className="recent-title">Recent Denies · Last 24h</div>
         {!recentDenies.length?(
-          <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.7}}>No denied requests recorded.</div>
+          <div style={{padding:'12px 0'}}>
+            <div style={{fontSize:13,color:'var(--green)',marginBottom:4}}>✓ No denies recorded</div>
+            <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.6}}>All outbound traffic is matching the allow-list.</div>
+          </div>
         ):recentDenies.map(e=>(
           <div key={e.id} className="deny-item">
-            <div className="deny-header"><span className="deny-time">{(e.timestamp||'').slice(11,19)}</span><span className="deny-reason">Not in allowlist</span></div>
+            <div className="deny-header"><span className="deny-time">{formatTs(e.timestamp,'local',false)} <span style={{opacity:.6}}>{localTZAbbr}</span></span><span className="deny-reason">Not in allowlist</span></div>
             <div className="deny-domain">{(e.rule_matched||'').replace('DNS Rebinding Detected: ','').replace('Internal IP Detected: ','')}</div>
-            <div className="deny-from">{e.direction}</div>
+            {e.payload_snippet&&<ExpandablePayload text={e.payload_snippet} max={60} mono/>}
+            <div className="deny-from" style={{marginTop:2}}>{e.direction}</div>
           </div>
         ))}
         {isAdmin&&(
@@ -1978,7 +2071,7 @@ function Repave({role}){
               const sc=a.status==='approved'?'var(--green)':a.status==='denied'?'var(--red)':'var(--yellow)';
               return(
                 <div key={a.id} style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 70px 130px',alignItems:'center',padding:'9px 12px',borderBottom:'1px solid var(--b1)',gap:12,background:a.status==='pending'?'rgba(234,179,8,.04)':''}}>
-                  <span style={{fontSize:10,color:'var(--t3)'}}>{(a.requested_at||'').slice(11,19)}</span>
+                  <span style={{fontSize:10,color:'var(--t3)'}}>{formatTs(a.requested_at,'local',false)} {localTZAbbr}</span>
                   <span style={{fontSize:11,fontFamily:'monospace',color:'var(--t2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.session_key}</span>
                   <span style={{fontSize:12,fontFamily:'monospace',fontWeight:a.status==='pending'?700:400,color:a.status==='pending'?'var(--yellow)':'var(--t3)'}}>{a.tool}</span>
                   <span style={{fontSize:10,color:sc,fontWeight:600,textTransform:'uppercase'}}>{a.status}</span>

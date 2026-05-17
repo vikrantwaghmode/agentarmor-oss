@@ -2194,8 +2194,16 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		}
 	}
 
+	// Content-level scanners (PII, prompt injection, LLM scanner) only apply when
+	// scanning actual LLM message content — i.e. when the frame contained a "messages"
+	// array (isUIFrame). WebSocket control / auth frames (login, nonce, heartbeat)
+	// legitimately contain email addresses and other user metadata; blocking them here
+	// would prevent the client from connecting. Network-level scanners (SSRF, canary,
+	// rate-limit, blast-radius) remain active for all frames.
+	contentIsLLMMessage := direction != "Request" || isUIFrame
+
 	// --- Prompt Injection — regex (block) ---
-	if direction == "Request" && policy.Scanners.PromptInjection.Enabled {
+	if contentIsLLMMessage && direction == "Request" && policy.Scanners.PromptInjection.Enabled {
 		for _, rule := range policy.Scanners.PromptInjection.BlockedPhrases {
 			if rule.Enabled && strings.Contains(contentToScanLower, rule.Rule) {
 				result.Blocked = true
@@ -2212,9 +2220,7 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	}
 
 	// --- Prompt Injection — LLM contextual scanner (block) ---
-	// Runs only on inbound requests that passed the regex scanner, catching subtle
-	// injections that don't match any fixed phrase.
-	if direction == "Request" && policy.Scanners.LLMScanner.Enabled && policy.Scanners.LLMScanner.URL != "" {
+	if contentIsLLMMessage && direction == "Request" && policy.Scanners.LLMScanner.Enabled && policy.Scanners.LLMScanner.URL != "" {
 		if blocked, rule := scanWithLLM(
 			contentToScan,
 			policy.Scanners.LLMScanner.URL,
@@ -2247,7 +2253,7 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	}
 
 	// --- Advanced PII via Presidio (block, confidence-gated) ---
-	if policy.Scanners.PII.AdvancedPII.Enabled && policy.Scanners.PII.AdvancedPII.URL != "" {
+	if contentIsLLMMessage && policy.Scanners.PII.AdvancedPII.Enabled && policy.Scanners.PII.AdvancedPII.URL != "" {
 		if blocked, rule := scanWithPresidio(contentToScan, policy.Scanners.PII.AdvancedPII.URL, policy.Scanners.PII.AdvancedPII.ConfidenceThreshold); blocked {
 			result.Blocked = true
 			result.RuleMatched = rule
@@ -2256,7 +2262,7 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	}
 
 	// --- PII (block) ---
-	if policy.Scanners.PII.Enabled {
+	if contentIsLLMMessage && policy.Scanners.PII.Enabled {
 		for i, regex := range compiledPIIRegexes {
 			rule := policy.Scanners.PII.BlockPatterns[i]
 			if rule.Enabled && regex.MatchString(contentToScan) {
@@ -2268,7 +2274,7 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	}
 
 	// --- Malicious Content (block) ---
-	if policy.Scanners.MaliciousContent.Enabled {
+	if contentIsLLMMessage && policy.Scanners.MaliciousContent.Enabled {
 		for i, regex := range compiledMaliciousRegexes {
 			rule := policy.Scanners.MaliciousContent.BlockPatterns[i]
 			if rule.Enabled && regex.MatchString(contentToScan) {
