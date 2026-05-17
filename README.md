@@ -563,7 +563,8 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 | CORS restriction | ✅ | Origin-restricted; `AGENTARMOR_CORS_ORIGINS` for extra origins |
 | Audit trail | ✅ | Full — client IP, session key, rule, payload snippet; WAL-mode SQLite |
 | SIEM integration | ✅ | Multiple webhook destinations (Slack, Splunk, generic) |
-| RBAC | ✅ | Admin / user roles on dashboard and all API endpoints |
+| RBAC | ✅ | Admin / user roles enforced on every API endpoint and every dashboard control — users see all tabs read-only, admins can edit |
+| Egress firewall (admin-managed) | ✅ | Add / remove hosts from the Firewall tab (04) in real-time; changes take effect immediately without restart |
 | Policy hot-reload + rollback | ✅ | Snapshot on every save; one-click restore |
 | Graceful config validation | ✅ | Invalid regex skipped with warning; bad YAML keeps previous policy active |
 | Multi-turn conversation scanning | ✅ | All non-system messages scanned, not just the first |
