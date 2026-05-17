@@ -1251,7 +1251,90 @@ func restoreSnapshot(id int) error {
 	return os.WriteFile("policy.yaml", []byte(yaml), 0644)
 }
 
+// htmlTagRe strips HTML/XML tags from text before it is stored in the audit log.
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+// sanitizeForLog returns a plain-text, secret-redacted version of a payload
+// safe for storage in the audit database.
+//
+//   - HTML tags are stripped so all log entries are plain text.
+//   - When a PII rule triggered the action, the content is replaced with a
+//     placeholder — the raw SSN / phone / credit-card number is never persisted.
+//   - The active secret-redaction rules are applied so API keys / tokens
+//     found in an otherwise-allowed message are masked before logging.
+func sanitizeForLog(payload, ruleMatched string) string {
+	// PII-blocked: never store the actual sensitive value.
+	if strings.HasPrefix(ruleMatched, "PII") || strings.HasPrefix(ruleMatched, "Advanced PII") {
+		return "[content redacted — PII detected before logging]"
+	}
+
+	// Extract readable text from JSON envelopes (OpenClaw / LLM API frames).
+	text := extractTextForLog(payload)
+
+	// Strip any HTML markup so the log is always plain text.
+	text = htmlTagRe.ReplaceAllString(text, " ")
+	// Collapse runs of whitespace left behind by tag removal.
+	text = strings.Join(strings.Fields(text), " ")
+
+	// Apply the configured secret-redaction rules so API keys / JWTs found in
+	// an allowed or non-PII-blocked message are masked in the log.
+	// We read the compiled regexes under a short read-lock; logAuditEvent is
+	// never called while the write-lock is held.
+	policyLock.RLock()
+	for i, rx := range compiledSecretRegexes {
+		rule := policy.Scanners.Secrets.RedactPatterns[i]
+		if rule.Enabled {
+			text = rx.ReplaceAllStringFunc(text, func(m string) string {
+				return applyRedaction(m, rule)
+			})
+		}
+	}
+	policyLock.RUnlock()
+
+	return text
+}
+
+// extractTextForLog pulls the human-readable message content out of a JSON
+// payload and falls back to the raw string if it cannot be parsed.
+func extractTextForLog(payload string) string {
+	var frame map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+		return payload // not JSON — return as-is
+	}
+
+	// Standard LLM API format: {messages:[{role,content},...]}
+	if messages, ok := frame["messages"].([]interface{}); ok {
+		var parts []string
+		for _, m := range messages {
+			msg, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if role, _ := msg["role"].(string); role == "system" {
+				continue
+			}
+			if content, ok := msg["content"].(string); ok && content != "" {
+				parts = append(parts, content)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " | ")
+		}
+	}
+
+	// Flat "content" field (some WebSocket frames).
+	if content, ok := frame["content"].(string); ok && content != "" {
+		return content
+	}
+
+	// Fall back to the raw JSON — better than nothing for forensics.
+	return payload
+}
+
 func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payloadSnippet string) {
+	// Sanitize: strip HTML, redact secrets, replace PII content with placeholder.
+	payloadSnippet = sanitizeForLog(payloadSnippet, ruleMatched)
+
 	if len(payloadSnippet) > 2000 {
 		payloadSnippet = payloadSnippet[:2000] + "...[truncated]"
 	}
@@ -2194,13 +2277,25 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		}
 	}
 
-	// Content-level scanners (PII, prompt injection, LLM scanner) only apply when
-	// scanning actual LLM message content — i.e. when the frame contained a "messages"
-	// array (isUIFrame). WebSocket control / auth frames (login, nonce, heartbeat)
-	// legitimately contain email addresses and other user metadata; blocking them here
-	// would prevent the client from connecting. Network-level scanners (SSRF, canary,
-	// rate-limit, blast-radius) remain active for all frames.
-	contentIsLLMMessage := direction != "Request" || isUIFrame
+	// Content-level scanners (PII, prompt injection, LLM scanner, malicious content)
+	// must run on all user-generated content. The only exception is WebSocket protocol
+	// control frames — connect, auth, ping, nonce, etc. — which legitimately carry
+	// user metadata (email address, device info) as part of the session handshake.
+	// We identify control frames by the presence of a well-known "type" field whose
+	// value is a recognised non-chat protocol action. Everything else — including
+	// chat frames that don't use the standard {messages:[]} envelope — is treated as
+	// user content and scanned in full.
+	isControlFrame := false
+	if direction == "Request" && requestFrame != nil && !isUIFrame {
+		if ftype, ok := requestFrame["type"].(string); ok {
+			switch strings.ToLower(ftype) {
+			case "connect", "auth", "ping", "heartbeat", "disconnect",
+				"identify", "subscribe", "unsubscribe", "nonce", "reconnect", "session":
+				isControlFrame = true
+			}
+		}
+	}
+	contentIsLLMMessage := !isControlFrame
 
 	// --- Prompt Injection — regex (block) ---
 	if contentIsLLMMessage && direction == "Request" && policy.Scanners.PromptInjection.Enabled {
