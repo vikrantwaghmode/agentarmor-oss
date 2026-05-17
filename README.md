@@ -574,6 +574,11 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 | **Prometheus metrics** | ✅ | `/armor/metrics` Prometheus text format; optional `METRICS_TOKEN` scrape auth; exposes request counters, scanner rules, goroutines, heap |
 | **Secrets vault** | ✅ | HashiCorp Vault (token/AppRole), AWS Secrets Manager (static/IMDSv2), GCP Secret Manager (SA key/metadata), Azure Key Vault (SP/managed identity) |
 | **Cert auto-renewal** | ✅ | ACME / Let's Encrypt via `ACME_DOMAIN` + `ACME_EMAIL`; auto-renews; falls back to self-signed when unset |
+| **WASM custom filters** | ✅ | Drop any `.wasm` file into `./wasm-filters/`; upload/toggle/delete from dashboard; WASI ABI — Go, Rust, C, AssemblyScript |
+| **OpenTelemetry tracing** | ✅ | OTLP/HTTP spans to Jaeger / Tempo / Honeycomb; configurable from dashboard without restart; `X-Trace-ID` header on every response |
+| **Audit log export** | ✅ | CSV or NDJSON download from the Audit tab; date-range and action filters; up to 100k rows; admin-only |
+| **Kubernetes / Helm** | ✅ | Helm chart with HA, sidecar, and ACME modes; OCI registry at `ghcr.io/vikrantwaghmode/agentarmor`; auto-published on release tags |
+| **Dashboard infrastructure config** | ✅ | All infra settings (DB, Redis, ACME, OTel, metrics token) editable from tab 10; hot-reload where possible; restart dialog for settings that need it |
 
 The security *design* is enterprise-grade. All major infrastructure gaps have been closed.
 
