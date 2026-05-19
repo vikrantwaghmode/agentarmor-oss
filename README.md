@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="AgentArmor — Defense-in-depth for AI agents" width="700" />
 </p>
 <p align="center">
-  <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vikrantwaghmode/agentarmor-oss?style=flat-square&color=blue" alt="License"></a>
+  <a href="https://github.com/vikrantwaghmode/agentarmor-oss/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm_Noncommercial_1.0-blue?style=flat-square" alt="License: PolyForm Noncommercial"></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker" alt="Docker">
   <img src="https://img.shields.io/badge/layer_7-proxy-8B5CF6?style=flat-square" alt="L7">
@@ -680,7 +680,14 @@ LinkedIn: https://www.linkedin.com/in/securityhandyman/
 
 ## License
 
-See [LICENSE](LICENSE).
+AgentArmor is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+**Free for non-commercial use** — personal projects, research, education, internal non-revenue tooling, open-source work, and contributions.
+
+**Commercial use requires a separate license** — this includes building a paid product or service that uses AgentArmor, offering it as a hosted/managed service, or any for-profit use where AgentArmor is a material component of the value delivered. Forking or modifying it does not change this: if you monetise it in any form, you need a commercial license.
+
+For commercial licensing, OEM partnerships, or any for-profit use case:
+📧 vikrant.waghmode@gmail.com · 🔗 [linkedin.com/in/securityhandyman](https://www.linkedin.com/in/securityhandyman/)
 
 ---
 
