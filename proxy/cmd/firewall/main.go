@@ -22,7 +22,6 @@ func run(cmd string, args ...string) {
 }
 
 func runCheck(cmd string, args ...string) error {
-	// This helper does not ignore errors, unlike run().
 	return exec.Command(cmd, args...).Run()
 }
 
@@ -35,7 +34,7 @@ func main() {
 	}
 
 	var config FirewallConfig
-	yaml.Unmarshal(data, &config)
+	yaml.Unmarshal(data, &config) //nolint:errcheck
 
 	// 1. Ensure our custom chain exists, creating it if it doesn't.
 	run("iptables", "-N", "AI_EGRESS")
@@ -47,41 +46,35 @@ func main() {
 
 	// 3. Flush any existing rules from our chain to ensure a clean slate.
 	run("iptables", "-F", "AI_EGRESS")
-	run("iptables", "-A", "AI_EGRESS", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT") // Must be first rule
+	run("iptables", "-A", "AI_EGRESS", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
 
-	// 2. Allow ALL Loopback & Docker Embedded DNS
-	// Docker DNS (127.0.0.11) uses DNAT to map port 53 to random high ports internally.
-	// We must whitelist the entire 127.x.x.x block to catch those rerouted packets.
+	// Allow loopback & Docker embedded DNS
 	run("iptables", "-A", "AI_EGRESS", "-d", "127.0.0.0/8", "-j", "ACCEPT")
 
-	// ALLOW: Outbound DNS requests (so OpenClaw can resolve googleapis.com)
-	// We allow port 53 globally here because DNS lookups are required for the API to function.
+	// Allow outbound DNS
 	run("iptables", "-A", "AI_EGRESS", "-p", "udp", "--dport", "53", "-j", "ACCEPT")
 	run("iptables", "-A", "AI_EGRESS", "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
 
-	// 3. ALLOW: Docker Internal Networks for Sidecars
-	// Ensures Ollama and Presidio are always reachable regardless of container startup order
-	// (Layer 7 proxy still actively blocks SSRF to these subnets from user input)
+	// Allow Docker internal networks for sidecars (Ollama, Presidio)
 	run("iptables", "-A", "AI_EGRESS", "-d", "172.16.0.0/12", "-j", "ACCEPT")
 	run("iptables", "-A", "AI_EGRESS", "-d", "192.168.0.0/16", "-j", "ACCEPT")
 
-	// 4. Resolve and Allow external domains from firewall.yaml
+	// Resolve and allow external domains from firewall.yaml
 	for _, domain := range config.AllowedDomains {
 		ips, err := net.LookupIP(domain)
 		if err != nil {
 			log.Printf("⚠️ Could not resolve %s", domain)
 			continue
 		}
-
 		for _, ip := range ips {
-			if ip.To4() != nil { // IPv4 only
+			if ip.To4() != nil {
 				run("iptables", "-A", "AI_EGRESS", "-d", ip.String(), "-j", "ACCEPT")
 				log.Printf("✅ Firewall: Allowed %s (%s)", domain, ip.String())
 			}
 		}
 	}
 
-	// 5. THE KILL SWITCH (Block everything else)
+	// Kill switch — block everything else
 	run("iptables", "-A", "AI_EGRESS", "-j", "DROP")
 
 	log.Println("🧱 Firewall Locked: All unauthorized outbound traffic will be dropped.")

@@ -16,5 +16,7 @@ require (
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
-	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/net v0.27.0 // indirect
+	golang.org/x/sys v0.32.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
 )

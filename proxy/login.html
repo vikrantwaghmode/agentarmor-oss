@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentArmor — Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d0d;color:#d4d4d4;font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
+.card{width:100%;max-width:380px;border:1px solid #222;border-radius:10px;
+  background:#111;padding:40px 36px;text-align:center}
+.logo{display:inline-flex;align-items:center;justify-content:center;
+  width:56px;height:56px;border-radius:14px;background:rgba(139,92,246,.12);
+  border:1px solid rgba(139,92,246,.3);margin-bottom:20px}
+.title{font-size:18px;font-weight:700;color:#f0f0f0;margin-bottom:6px;letter-spacing:-.02em}
+.subtitle{font-size:11px;color:#666;margin-bottom:32px;line-height:1.5}
+.btn{display:block;width:100%;padding:11px 0;border-radius:8px;font-size:12px;
+  font-family:inherit;font-weight:700;cursor:pointer;transition:opacity .15s;
+  text-decoration:none;letter-spacing:.02em}
+.btn:hover{opacity:.85}
+.btn-oidc{background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;border:none}
+.btn-token{background:transparent;color:#a78bfa;border:1px solid rgba(139,92,246,.4)}
+.btn-token:hover{background:rgba(139,92,246,.08)}
+.divider{display:flex;align-items:center;gap:10px;margin:20px 0;color:#333;font-size:10px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:#222}
+input[type=password],input[type=text]{width:100%;padding:10px 12px;background:#0d0d0d;
+  border:1px solid #2a2a2a;border-radius:7px;color:#d4d4d4;font-size:12px;
+  font-family:inherit;outline:none;margin-bottom:10px;transition:border-color .15s}
+input:focus{border-color:#7c3aed}
+input::placeholder{color:#444}
+.error{margin-top:16px;padding:10px 12px;background:rgba(239,68,68,.08);
+  border:1px solid rgba(239,68,68,.25);border-radius:7px;font-size:11px;color:#f87171}
+.hint{margin-top:24px;font-size:10px;color:#444;line-height:1.6}
+.hint a{color:#7c3aed;text-decoration:none}
+.hint a:hover{text-decoration:underline}
+.user-info{margin-top:6px;font-size:10px;color:#555}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+      <path d="M12 2L3 6v6c0 5.25 3.75 10.15 9 11.25C17.25 22.15 21 17.25 21 12V6L12 2Z"
+            fill="rgba(139,92,246,.3)" stroke="#7c3aed" stroke-width="1.5"
+            stroke-linejoin="round"/>
+      <path d="M9 12l2 2 4-4" stroke="#a78bfa" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+  <div class="title">AgentArmor</div>
+  <div class="subtitle">Sign in to access the AI assistant.<br>Your session will be scoped to your role.</div>
+
+  {{if .OIDCEnabled}}
+  <a href="/armor/user-auth?return={{.ReturnTo}}" class="btn btn-oidc">
+    Continue with {{.ProviderName}}
+  </a>
+  {{if not .OIDCOnly}}
+  <div class="divider">or</div>
+  {{end}}
+  {{end}}
+
+  {{if not .OIDCOnly}}
+  <form method="POST" action="/armor/user-login">
+    <input type="hidden" name="return" value="{{.ReturnTo}}">
+    <input type="password" name="token" placeholder="Access token" autocomplete="current-password" autofocus>
+    <button type="submit" class="btn btn-token">Sign in with access token</button>
+  </form>
+  {{end}}
+
+  {{if .Error}}
+  <div class="error">{{.Error}}</div>
+  {{end}}
+
+  <div class="hint">
+    Contact your admin to get access &mdash;
+    <a href="/armor/">Admin dashboard</a>
+  </div>
+</div>
+</body>
+</html>

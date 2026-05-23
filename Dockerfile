@@ -39,8 +39,8 @@ COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go \
-    && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./firewall.go
+    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go \
+    && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./cmd/firewall
 
 # --- Stage 3: Final runtime ---
 FROM node:22-slim

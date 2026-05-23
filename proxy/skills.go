@@ -156,12 +156,25 @@ func TriggerEmbeddingsIfNeeded(baseURL, model string) {
 	}()
 }
 
+// isModelMissingError returns true when the error is a 404 meaning the Ollama
+// model hasn't been pulled yet — as opposed to a transient network error.
+func isModelMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "404") || strings.Contains(s, "not found")
+}
+
 // embedAllDocs runs in a background goroutine after skills load.
 // Embeds every knowledge doc using Ollama; docs without embeddings
 // automatically fall back to BM25 at query time.
+//
+// On "model not found" (404) it logs once and exits early rather than
+// spamming one error per document. A separate retry loop polls until the
+// model is available and then re-triggers the embedding run.
 func embedAllDocs(baseURL, model string) {
 	skillsMu.Lock()
-	// Collect all docs that need embedding
 	type target struct {
 		skill *LoadedSkill
 		idx   int
@@ -174,24 +187,41 @@ func embedAllDocs(baseURL, model string) {
 	}
 	skillsMu.Unlock()
 
-	// Also embed each skill's identity for semantic auto-routing.
+	// Embed each skill's identity for semantic auto-routing.
 	for _, skill := range loadedSkills {
 		identityText := fmt.Sprintf("%s. %s. Topics: %s",
 			skill.Config.Name,
 			skill.Config.Description,
 			strings.Join(skill.Config.Keywords, ", "))
-		if emb, err := generateEmbedding(identityText, baseURL, model); err == nil {
-			skillsMu.Lock()
-			skill.identityEmbedding = emb
-			skillsMu.Unlock()
+		emb, err := generateEmbedding(identityText, baseURL, model)
+		if err != nil {
+			if isModelMissingError(err) {
+				log.Printf("⬡ Semantic RAG: model %q not found on Ollama — "+
+					"run: docker exec ollama ollama pull %s   "+
+					"(embeddings will retry automatically once the model is available)", model, model)
+				go retryEmbeddingsWhenReady(baseURL, model)
+				return
+			}
+			// transient error on identity embedding — skip silently
+			continue
 		}
+		skillsMu.Lock()
+		skill.identityEmbedding = emb
+		skillsMu.Unlock()
 	}
-	log.Printf("🔢 Semantic RAG: routing embeddings ready, embedding %d doc(s) with %s…", len(targets), model)
+
+	log.Printf("🔢 Semantic RAG: embedding %d document(s) with %s…", len(targets), model)
 
 	for _, t := range targets {
 		emb, err := generateEmbedding(t.skill.Docs[t.idx].body, baseURL, model)
 		if err != nil {
-			log.Printf("⚠️  Embedding failed (%s / %s): %v", t.skill.Config.ID, t.skill.Docs[t.idx].title, err)
+			if isModelMissingError(err) {
+				// Already logged above if it was the first failure; just abort.
+				go retryEmbeddingsWhenReady(baseURL, model)
+				return
+			}
+			log.Printf("⚠️  Embedding failed (%s / %s): %v",
+				t.skill.Config.ID, t.skill.Docs[t.idx].title, err)
 			continue
 		}
 		skillsMu.Lock()
@@ -200,6 +230,36 @@ func embedAllDocs(baseURL, model string) {
 		embeddedDocCount.Add(1)
 	}
 	log.Printf("✅ Semantic RAG: %d/%d document(s) embedded", embeddedDocCount.Load(), len(targets))
+}
+
+// retryEmbeddingsWhenReady polls Ollama every 30 seconds until the embedding
+// model is available, then re-triggers the full embedding run.
+// Only one retry goroutine runs at a time (guarded by embeddingInProgress).
+func retryEmbeddingsWhenReady(baseURL, model string) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		time.Sleep(30 * time.Second)
+		// Check if the model is now available
+		resp, err := client.Get(strings.TrimRight(baseURL, "/") + "/api/tags")
+		if err != nil {
+			continue
+		}
+		var tags struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		json.NewDecoder(resp.Body).Decode(&tags) //nolint:errcheck
+		resp.Body.Close()
+		for _, m := range tags.Models {
+			if strings.HasPrefix(m.Name, model) {
+				log.Printf("✅ Semantic RAG: model %q is now available — starting embedding run", model)
+				embeddingInProgress.Store(false) // allow re-trigger
+				TriggerEmbeddingsIfNeeded(baseURL, model)
+				return
+			}
+		}
+	}
 }
 
 // generateEmbedding calls the Ollama /api/embeddings endpoint.
@@ -220,7 +280,8 @@ func generateEmbedding(text, baseURL, model string) ([]float64, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		// Return a plain error; the caller decides whether to log it.
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var result struct {

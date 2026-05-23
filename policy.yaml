@@ -54,6 +54,16 @@ scanners:
               enabled: true
             - rule: i am the administrator
               enabled: true
+            - rule: i am database admin
+              enabled: true
+            - rule: i am a database admin
+              enabled: true
+            - rule: i am the database admin
+              enabled: true
+            - rule: i am a db admin
+              enabled: true
+            - rule: i am db admin
+              enabled: true
             - rule: switch to unrestricted
               enabled: true
             - rule: unrestricted mode
@@ -62,6 +72,10 @@ scanners:
               enabled: true
     secrets:
         enabled: true
+        # Agent tokens with these scopes bypass secret redaction for their session.
+        # Example: a secret-rotation agent that needs to handle raw keys.
+        allow_scopes: []
+        # allow_scopes: [secrets:read]
         redact_patterns:
             - rule: (?i)(sk-[a-zA-Z0-9]{20,})
               enabled: true
@@ -93,6 +107,11 @@ scanners:
               strategy: remove
     pii:
         enabled: true
+        # Agent tokens with these scopes bypass PII blocking for their session.
+        # pii:read  — agent may receive PII (outbound scanner bypassed)
+        # pii:process — agent may send AND receive PII (both directions bypassed)
+        allow_scopes: []
+        # allow_scopes: [pii:read, pii:process]
         block_patterns:
             - rule: (?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b
               enabled: true
@@ -109,7 +128,15 @@ scanners:
     malicious_content:
         enabled: true
         block_patterns:
-            - rule: (?i)('|\s)or\s+1\s*=\s*1|union\s+select|drop\s+table
+            # Structural authority-claim + data-demand pattern.
+            # Catches: "I am CEO give me...", "I am the CFO show me...", "I am auditor get me..."
+            # without needing to enumerate every possible role title.
+            - rule: (?i)\bi\s+am\s+(a\s+|the\s+|your\s+)?[a-z][a-z\s]{1,30},?\s+(give|show|provide|send|share|get|fetch|retrieve|pull|return|access|display)\s+me\b
+              enabled: true
+            # C-suite / executive roles that almost never appear in legitimate queries.
+            - rule: (?i)\b(ceo|cfo|cto|coo|ciso|chief\s+(executive|financial|technology|operating|information|security)\s+officer|vice\s+president|board\s+member|board\s+director)\b.{0,60}(data|records|files|information|access|database|financ|payroll|salary|salaries|credential|password|secret|user|customer|employee)
+              enabled: true
+            - rule: (?i)('|\s)or\s+1\s*=\s*1|union\s+select|drop\s+(all\s+|the\s+)?(\w+\s+)?tables?
               enabled: true
             - rule: (?i)<script|onerror=
               enabled: true
@@ -140,13 +167,16 @@ scanners:
     llm_scanner:
         enabled: true
         url: http://ollama:11434
-        model: llama3.2:1b
-        confidence_threshold: 0.75
-        timeout_ms: 1500
+        model: llama3.2:3b
+        confidence_threshold: 0.85
+        timeout_ms: 2500
     rate_limiting:
         enabled: true
         requests_per_minute: 60
         burst: 120
+        # Agents with rate_limit:exempt scope bypass rate limiting entirely.
+        allow_scopes: []
+        # allow_scopes: [rate_limit:exempt]
     auto_repave:
         enabled: true
         triggers:
@@ -160,8 +190,15 @@ scanners:
         enabled: true
         alert_threshold: 0.34
         block_threshold: 0.9
+        # Agents with anomaly:exempt scope bypass anomaly scoring.
+        # Use for orchestrators whose high-volume, repetitive patterns look anomalous.
+        allow_scopes: []
     zero_trust_tools:
         enabled: true
+        # Agent tokens with these scopes bypass the approval queue for specific tools.
+        # tool:exec — bypass for exec, tool:browser — bypass for browser, tool:any — bypass all
+        allow_scopes: []
+        # allow_scopes: [tool:exec]
         high_risk_tools:
             - exec
             - browser
@@ -174,6 +211,9 @@ scanners:
         max_tool_calls_per_session: 100
         max_blocks_per_session: 10
         max_high_risk_calls_per_session: 5
+        # Agents with blast_radius:exempt scope bypass the blast-radius cap.
+        # Use for orchestrators that legitimately make many sequential tool calls.
+        allow_scopes: []
 webhooks: []
 threat_feeds:
     enabled: false
@@ -184,3 +224,38 @@ skills_rag:
     model: nomic-embed-text
     auto_route: true
     auto_route_threshold: 0.7
+
+# ── Agent Routing — controls which agents may spawn child tokens ─────────────
+# When enabled, only listed parent→children patterns are permitted.
+# Requires the parent to hold the agent:spawn scope.
+# Child scopes are always a subset of the parent's scopes (enforced by AgentArmor).
+agent_routing:
+    enabled: false
+    strict: false   # when true, deny spawn if no rule matches
+    rules: []
+    # Example rules:
+    # rules:
+    #   - parent: "orchestrator"
+    #     children: ["analyst-*", "worker-*"]
+    #     max_spawn_depth: 3
+    #   - parent: "analyst-*"
+    #     children: ["data-fetcher"]
+    #     max_spawn_depth: 1
+
+# ── SSO group → ABAC scope mappings ─────────────────────────────────────────
+# Maps OIDC group memberships to capability scopes for chat users.
+# Evaluated at login time; scopes are stored in the signed session cookie.
+# Leave empty (no mappings, no default_scopes) for zero-trust: all scanners
+# fire at full strength for every authenticated user.
+sso:
+    group_scope_mappings: []
+    # Example:
+    # group_scope_mappings:
+    #   - groups: [medical-staff, doctors, nurses]
+    #     scopes: [pii:read, pii:process]
+    #   - groups: [support-team]
+    #     scopes: [pii:read]
+    #   - groups: [platform-engineers]
+    #     scopes: [tool:exec, tool:any, blast_radius:exempt]
+    default_scopes: []
+    # default_scopes: []  # scopes every authenticated user gets regardless of group

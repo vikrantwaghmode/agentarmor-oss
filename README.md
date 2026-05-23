@@ -47,8 +47,9 @@ AgentArmor is built around three principles:
 
 | Scanner / Feature | Direction | Action | What it catches |
 |-------------------|-----------|--------|-----------------|
-| Prompt Injection | In | Block | Jailbreaks, instruction overrides, false authority claims (30+ phrases) |
-| LLM Scanner | In | Block | Subtle injections that evade regex — Ollama `llama3.2:1b`, confidence-gated |
+| Prompt Injection | In | Block | Jailbreaks, instruction overrides, false authority claims, social engineering, data exfiltration (100+ rules across 6 categories; structural regex patterns bypass paraphrasing) |
+| LLM Scanner | In | Block | Subtle injections that evade regex — Ollama `llama3.2:3b`, confidence-gated (0.85); warm-up on startup prevents cold-start circuit trips |
+| Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
 | PII / DLP | Both | Block | Email, phone, SSN, credit card |
@@ -58,9 +59,9 @@ AgentArmor is built around three principles:
 | Malicious Content | Both | Block | SQLi, XSS, SSRF, command injection, executables |
 | Intent Scoring | In | Block | Stateful tool-call sequences per session (`read_file → post_request` etc.) |
 | Anomaly Scoring | In | Block/Alert | 3-signal behavioural scorer (0–1); configurable alert + block thresholds |
-| Zero-Trust Tool Approval | In | Block | `exec`, `browser`, `sessions_spawn` blocked until admin approves per-session |
-| Blast Radius Cap | In | Block | Hard limits on tool calls, blocks, high-risk calls per session |
-| Rate Limiting | In | Block | Token bucket per session key **and** per client IP (X-Forwarded-For aware) — 60 req/min, burst 120 |
+| Zero-Trust Tool Approval | In | Block | `exec`, `browser`, `sessions_spawn` blocked until admin approves per-session; bypassable with `tool:exec` / `tool:any` scope |
+| Blast Radius Cap | In | Block | Hard limits on tool calls, blocks, high-risk calls per session; bypassable with `blast_radius:exempt` scope for orchestrators |
+| Rate Limiting | In | Block | Token bucket per session key **and** per client IP — 60 req/min, burst 120; bypassable with `rate_limit:exempt` scope |
 | Auto-Repave Trigger | — | Repave | Fires kill-sessions + canary rotation when event thresholds are crossed |
 | Skills + Semantic RAG | — | Inject | 5 built-in role personas; BM25 or vector embedding retrieval; auto-routes messages to best-matching skill |
 | SIEM / Webhooks | — | Notify | Multiple destinations: Slack / Splunk HEC / generic JSON; per-destination event filters |
@@ -78,7 +79,8 @@ AgentArmor is built around three principles:
 | WASM Filters | Both | Block | Drop any `.wasm` file into `./wasm-filters/`; runs on every request, hot-reloaded from dashboard; any WASI language (Go, Rust, C, AssemblyScript) |
 | OpenTelemetry Traces | — | Observe | One span per request + scan child span; OTLP/HTTP to Jaeger / Tempo / Honeycomb; `X-Trace-ID` response header; zero new Go deps |
 | Infrastructure Config | — | Config | `infra.yaml` dashboard (tab 10) — configure PostgreSQL, Redis, ACME, metrics token with hot-reload; **Restart System** button with "now or later" dialog |
-| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; 10 tabs covering health, policy, audit, firewall, skills, repave, SSO, tenants, logs, and infrastructure |
+| **Context-Aware Agent Tokens (ABAC)** | — | Auth | Signed JWTs with capability scopes; every scanner respects scopes; ephemeral child tokens for dynamic agents; spawn-chain with scope subsetting |
+| Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; 11 tabs including Agent Tokens (11) for issuing and revoking scoped JWTs |
 
 ## Quick Start
 
@@ -87,9 +89,11 @@ git clone https://github.com/vikrantwaghmode/agentarmor-oss.git
 cd agentarmor-oss
 cp .env.template .env                            # set ADMIN_TOKEN, USER_TOKEN, GEMINI_API_KEY
 docker compose up --build -d
-docker exec ollama ollama pull llama3.2:1b       # LLM scanner model (~800 MB, once)
+# Models are pulled automatically by the ollama-pull service on first start
 # Dashboard → https://localhost:8443/armor/
-# Accept the self-signed cert warning — or replace certs/server.crt + certs/server.key
+# Accept the self-signed cert warning, or use mkcert for a trusted local cert:
+#   mkcert -install && mkcert -key-file certs/server.key -cert-file certs/server.crt localhost 127.0.0.1
+#   docker compose restart agentarmor
 ```
 
 > **TLS is on by default.** A self-signed certificate is generated automatically on first run and stored in `./certs/`. Replace with a CA-signed cert for production — no rebuild needed.
@@ -228,7 +232,7 @@ scanners:
   zero_trust_tools:  { enabled: true, high_risk_tools: [exec, browser, sessions_spawn], auto_deny_after_minutes: 10 }
   blast_radius:      { enabled: true, max_tool_calls_per_session: 100, max_blocks_per_session: 10 }
   auto_repave:       { enabled: true, triggers: { canary_detections: 3, window_minutes: 5 } }
-  llm_scanner:       { enabled: true, url: "http://ollama:11434", model: "llama3.2:1b", confidence_threshold: 0.75 }
+  llm_scanner:       { enabled: true, url: "http://ollama:11434", model: "llama3.2:3b", confidence_threshold: 0.85, timeout_ms: 2500 }
 
 # Multiple SIEM destinations
 webhooks:
@@ -292,7 +296,7 @@ Admin can activate skills globally from the **Skills tab (05)** in the dashboard
 
 | Service | Purpose | Setup |
 |---------|---------|-------|
-| `ollama` | LLM scanner + semantic RAG | `docker exec ollama ollama pull llama3.2:1b` (scanner) + `nomic-embed-text` (RAG) |
+| `ollama` | LLM scanner + semantic RAG | Models pulled automatically by `ollama-pull` on first `docker compose up`; models: `llama3.2:3b` (scanner) + `nomic-embed-text` (RAG) |
 | `presidio-analyzer` | Confidence-gated PII | Enable `pii.advanced_pii.enabled: true` after confirming `curl http://localhost:3000/health` |
 
 Both fail gracefully — proxy falls back to regex scanners if unreachable.
@@ -302,11 +306,18 @@ Both fail gracefully — proxy falls back to regex scanners if unreachable.
 ```
 agentarmor-oss/
 ├── proxy/
-│   ├── main.go          # Scanners, WS handler, API endpoints, repave features
+│   ├── main.go          # Core proxy, scanners, WS handler, API endpoints, repave features
+│   ├── scannercheck.go  # Scanner status probes, startup gate, badge API
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
 │   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
+│   ├── tokens.go        # Agent token issuance, ABAC scopes, spawn-chain
+│   ├── usersession.go   # Browser session management (OIDC + token auth)
+│   ├── loginhandler.go  # Login / callback / logout HTTP handlers
 │   ├── tenants.go       # Multi-tenancy — Tenant struct, CRUD, token resolution
 │   ├── dashboard.html   # Editorial Terminal UI (React, embedded via go:embed)
+│   ├── loadingpage.html # Scanner-gate loading screen (shown until all scanners ready)
+│   ├── login.html       # SSO login page
+│   ├── cmd/firewall/    # Standalone iptables egress firewall binary
 │   └── policy.yaml      # Embedded default policy (go:embed)
 ├── skills/              # Built-in skill definitions (volume-mounted for live edits)
 │   └── <id>/skill.yaml + knowledge/*.md
@@ -580,6 +591,7 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 | **Audit log export** | ✅ | CSV or NDJSON download from the Audit tab; date-range and action filters; up to 100k rows; admin-only |
 | **Kubernetes / Helm** | ✅ | Helm chart with HA, sidecar, and ACME modes; OCI registry at `ghcr.io/vikrantwaghmode/agentarmor`; auto-published on release tags |
 | **Dashboard infrastructure config** | ✅ | All infra settings (DB, Redis, ACME, OTel, metrics token) editable from tab 10; hot-reload where possible; restart dialog for settings that need it |
+| **Context-aware ABAC (agent tokens)** | ✅ | Scoped JWTs gate every scanner; ephemeral child tokens for dynamic agents; spawn-chain with scope subsetting and cascading revocation; agent routing policy |
 
 The security *design* is enterprise-grade. All major infrastructure gaps have been closed.
 
@@ -647,9 +659,92 @@ Prometheus scrape config:
   tls_config: { insecure_skip_verify: true }  # remove when using CA cert
 ```
 
+## Context-Aware Security (ABAC)
+
+AgentArmor's default policy applies uniformly to every request. When you have agents with different trust levels and roles — a PII-processing billing agent, an orchestrator that spawns workers, a secret-rotation agent — blanket rules break legitimate workflows.
+
+**Agent tokens** solve this with Attribute-Based Access Control: admins issue signed JWTs that carry capability scopes. The scanner pipeline reads the scopes for each session and skips only the scanners the agent is authorised to bypass.
+
+### Capability scopes
+
+| Scope | What it unlocks |
+|---|---|
+| `pii:read` | Receive PII in LLM responses (outbound PII scanner bypassed) |
+| `pii:process` | Send **and** receive PII (inbound + outbound PII bypassed) |
+| `secrets:read` | Secret values not redacted in this session |
+| `tool:exec` | Zero-trust approval queue bypassed for the `exec` tool |
+| `tool:browser` | Zero-trust approval queue bypassed for `browser` |
+| `tool:any` | All zero-trust tool approvals bypassed |
+| `rate_limit:exempt` | Rate limiting bypassed — for high-throughput orchestrators |
+| `anomaly:exempt` | Anomaly scoring bypassed — for predictable multi-step pipelines |
+| `blast_radius:exempt` | Blast-radius cap bypassed — for orchestrators that do many tool calls |
+| `agent:spawn` | Can create child tokens for downstream agents (scope subsetting enforced) |
+
+**Scanners that are never bypassable regardless of scope:** prompt injection, GoalLock canary, SSRF / DNS rebinding, blast-radius cap (unless `blast_radius:exempt`).
+
+### Issuing a token (dashboard or API)
+
+```bash
+# Dashboard: Agent Tokens tab (11) → Issue New Token
+# Or via API (admin token):
+curl -X POST https://localhost:8443/armor/api/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"agent_id":"billing-agent","scopes":["pii:read","pii:process"],"expires_in":"24h"}'
+
+# Agent uses it:
+Authorization: Bearer <returned-jwt>
+```
+
+### Dynamic / ephemeral agents (spawn chain)
+
+For orchestration systems where agents spin up, do their job, and go away:
+
+```bash
+# Orchestrator token (long-lived, issued by admin, has agent:spawn scope)
+# When a worker needs to spin up:
+curl -X POST https://localhost:8443/armor/api/tokens/spawn \
+  -H "Authorization: Bearer <orchestrator-jwt>" \
+  -d '{"agent_id":"worker-001","scopes":["pii:read"],"expires_in":"5m"}'
+
+# Returns a worker JWT valid for 5 minutes.
+# Scopes are always a subset of the parent's — privilege can never escalate.
+# Expiry is capped at the parent's remaining lifetime.
+# Revoking the orchestrator token cascades to all its children instantly.
+```
+
+### Agent routing policy (`policy.yaml`)
+
+Control which agents are allowed to spawn which children:
+
+```yaml
+agent_routing:
+  enabled: true
+  strict: true   # deny spawn if no rule matches
+  rules:
+    - parent: "orchestrator"
+      children: ["analyst-*", "worker-*"]
+      max_spawn_depth: 3
+    - parent: "analyst-*"
+      children: ["data-fetcher"]
+      max_spawn_depth: 1
+```
+
+### What this maps to (from the article on AgentQ)
+
+| AgentQ pattern | AgentArmor equivalent |
+|---|---|
+| JWT constrains which MCP tools are exposed | JWT scopes constrain which scanners fire |
+| Supervisor mints tokens for downstream agents | Admin or orchestrator issues child tokens via `/tokens/spawn` |
+| Scopes are a subset of the parent's | Enforced — child scopes must be a subset of parent scopes |
+| Transitive trust via signed credentials | HMAC-HS256 JWTs — signature verified on every request, revocation checked in memory |
+| Least privilege | No scope = most restrictive; add only what the agent specifically needs |
+
 ## Roadmap
 
 ### Recently shipped
+- [x] **Scanner Gate** — all chat and API traffic blocked until every enabled scanner is operational; loading page with live status badges; LLM scanner warm-up on startup prevents cold-start circuit-breaker loops
+- [x] **Expanded prompt injection rules** — 100+ rules across 6 categories: jailbreaks, system prompt extraction, indirect/delayed injection, false authority/privilege escalation, social engineering, and data exfiltration; structural regex patterns (authority-claim + data-demand) catch paraphrasing variants; per-rule `allow_scopes` for authenticated users who have proven their role
+- [x] **LLM scanner reliability** — upgraded to `llama3.2:3b` at confidence 0.85; warm-up goroutine pre-loads the model into memory on startup (120s budget); circuit breaker surfaced to scanner gate so blocked traffic stays blocked while Ollama recovers
 - [x] **SSO / OIDC** — Google, Microsoft, Okta, Auth0, Keycloak; live-configurable from the Auth tab without restart
 - [x] **Multi-tenancy** — Isolated policies, tokens, audit logs, and rate limits per team/application; routed via `X-Tenant-ID` header or Bearer token
 - [x] **Secrets vault / KMS** — HashiCorp Vault (token or AppRole), AWS Secrets Manager (static creds or EC2 IMDSv2), GCP Secret Manager (service account or GCE metadata), Azure Key Vault (service principal or managed identity); zero new Go dependencies
@@ -667,6 +762,7 @@ Prometheus scrape config:
 
 - [x] **Helm OCI registry** — chart published to `ghcr.io/vikrantwaghmode/agentarmor` via GitHub Actions on every release tag; `helm install oci://ghcr.io/vikrantwaghmode/agentarmor --version x.y.z`
 - [x] **Audit date-range filter** — `From` / `To` datetime-local pickers in the export dropdown; filters passed as RFC3339 `?from=` / `?to=` params; active date range shown in the filter summary strip
+- [x] **Context-aware ABAC / agent tokens** — scoped JWTs gate every scanner; ephemeral child tokens for dynamic multi-agent systems; `POST /armor/api/tokens/spawn` for parent→child issuance with scope subsetting; cascading revocation; `agent_routing` policy for approved call patterns
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

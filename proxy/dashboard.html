@@ -632,6 +632,28 @@ function Health({data,recentBlocks}){
   );
 }
 
+/* ═══ SCANNER STATUS BADGE — used in Policy tab ═══ */
+function ScannerStatusBadge({name}){
+  const[entry,setEntry]=useState(null);
+  useEffect(()=>{
+    api('scanner-status').then(r=>r.json())
+      .then(d=>setEntry((d.scanners||[]).find(s=>s.name===name)||null))
+      .catch(()=>{});
+  },[name]);
+  if(!entry)return<span style={{fontSize:11,color:'var(--t3)'}}>checking…</span>;
+  const colors={active:'var(--green)',up:'var(--green)',down:'var(--red)','model-missing':'var(--yellow)',disabled:'var(--t3)',inactive:'var(--t3)'};
+  const col=colors[entry.status]||'var(--t3)';
+  return(
+    <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+      <span style={{width:7,height:7,borderRadius:'50%',background:col,
+        boxShadow:entry.status==='active'||entry.status==='up'?`0 0 5px ${col}`:'none',
+        display:'inline-block',flexShrink:0}}/>
+      <span style={{fontSize:11,color:col,fontWeight:600}}>{entry.status}</span>
+      {entry.detail&&<span style={{fontSize:10,color:'var(--t3)'}}>· {entry.detail}</span>}
+    </span>
+  );
+}
+
 /* ═══ POLICY ═══ */
 /* ── PostureConfig — editable security posture blocks ── */
 /* ═══ SSO / OIDC Configuration Component ═══ */
@@ -779,11 +801,30 @@ function SSOConfig({isAdmin}){
 
           {I('Provider name (optional)','provider_name','text','Acme Corp SSO')}
 
+          <div style={{marginTop:8,marginBottom:4}}>
+            <div style={{fontSize:11,fontWeight:600,color:'var(--t2)',marginBottom:4}}>
+              Groups claim name
+            </div>
+            <input value={cfg.groups_claim||''} disabled={!isAdmin}
+              onChange={e=>set('groups_claim',e.target.value)}
+              placeholder="groups  (Azure AD · Okta · Keycloak default)"
+              style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none'}}
+              onFocus={e=>e.target.style.borderColor='var(--purple)'}
+              onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+            <div style={{fontSize:10,color:'var(--t3)',marginTop:3,lineHeight:1.5}}>
+              The OIDC token claim that contains group memberships.
+              Azure AD defaults to <code style={{color:'var(--yellow)'}}>groups</code> (GUIDs) — enable "optional claims" in the app manifest to emit display names instead.
+              ADFS / PingFederate sometimes use <code style={{color:'var(--yellow)'}}>memberOf</code> or a custom claim.
+            </div>
+          </div>
+
           <div style={{height:1,background:'var(--b1)'}}/>
           {GroupTags('Admin groups → full dashboard access','admin_groups',newAdminGroup,setNewAdminGroup)}
           {GroupTags('User groups → read-only access','user_groups',newUserGroup,setNewUserGroup)}
           <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.6,padding:'4px 0'}}>
             If both lists are empty, any authenticated user gets read-only access.
+            For Active Directory: use the AD group display name or the Azure AD object GUID depending on your claim configuration.
           </div>
 
           {/* Test + Save */}
@@ -808,6 +849,169 @@ function SSOConfig({isAdmin}){
           </div>
         </div>
       )}
+
+      {/* ── Chat user scopes — group → ABAC capability mapping ── */}
+      <GroupScopeMappingEditor cfg={cfg} setCfg={setCfg} setDirty={setDirty} isAdmin={isAdmin}/>
+    </div>
+  );
+}
+
+function GroupScopeMappingEditor({cfg,setCfg,setDirty,isAdmin}){
+  const[newGroup,setNewGroup]=useState('');
+  const[newScopes,setNewScopes]=useState([]);
+  const scopes=cfg?.group_scope_mappings||[];
+  const defaults=cfg?.default_scopes||[];
+
+  const scopeDefs=[
+    {value:'pii:read',label:'pii:read',danger:false},
+    {value:'pii:process',label:'pii:process',danger:true},
+    {value:'secrets:read',label:'secrets:read',danger:true},
+    {value:'tool:exec',label:'tool:exec',danger:true},
+    {value:'tool:browser',label:'tool:browser',danger:true},
+    {value:'tool:any',label:'tool:any',danger:true},
+    {value:'rate_limit:exempt',label:'rate_limit:exempt',danger:true},
+    {value:'anomaly:exempt',label:'anomaly:exempt',danger:true},
+    {value:'blast_radius:exempt',label:'blast_radius:exempt',danger:true},
+    {value:'agent:spawn',label:'agent:spawn',danger:false},
+  ];
+
+  const toggleNewScope=s=>setNewScopes(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s]);
+
+  const addMapping=()=>{
+    if(!newGroup.trim()||!newScopes.length)return;
+    const existing=scopes.find(m=>m.groups.includes(newGroup.trim()));
+    let updated;
+    if(existing){
+      updated=scopes.map(m=>m===existing?{...m,scopes:[...new Set([...m.scopes,...newScopes])]}:m);
+    }else{
+      updated=[...scopes,{groups:[newGroup.trim()],scopes:newScopes}];
+    }
+    setCfg(p=>({...p,group_scope_mappings:updated}));
+    setDirty(true);setNewGroup('');setNewScopes([]);
+  };
+
+  const removeMapping=i=>{
+    setCfg(p=>({...p,group_scope_mappings:scopes.filter((_,j)=>j!==i)}));
+    setDirty(true);
+  };
+
+  const toggleDefault=s=>{
+    const next=defaults.includes(s)?defaults.filter(x=>x!==s):[...defaults,s];
+    setCfg(p=>({...p,default_scopes:next}));
+    setDirty(true);
+  };
+
+  const inpStyle={padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+    borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none'};
+
+  const scopeBadge=(s,removable,onRemove)=>{
+    const def=scopeDefs.find(d=>d.value===s);
+    return(
+      <span key={s} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 7px',
+        borderRadius:3,fontSize:10,fontFamily:'var(--mono)',fontWeight:600,
+        background:def?.danger?'rgba(239,68,68,.1)':'rgba(74,222,128,.08)',
+        border:`1px solid ${def?.danger?'rgba(239,68,68,.3)':'rgba(74,222,128,.25)'}`,
+        color:def?.danger?'var(--red)':'var(--green)'}}>
+        {s}
+        {removable&&isAdmin&&<span onClick={onRemove} style={{cursor:'pointer',opacity:.7,marginLeft:2}}>✕</span>}
+      </span>
+    );
+  };
+
+  return(
+    <div style={{marginTop:24,border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:18,background:'var(--s1)'}}>
+      <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',marginBottom:4,textTransform:'uppercase',letterSpacing:'.05em'}}>
+        Chat User Scopes — Group → ABAC Mapping
+      </div>
+      <div style={{fontSize:11,color:'var(--t3)',marginBottom:14,lineHeight:1.6}}>
+        When a user logs in via SSO, their OIDC group memberships are mapped to capability scopes
+        embedded in their session cookie. These scopes relax specific scanners for their chat session.
+      </div>
+
+      {/* Existing mappings */}
+      {scopes.length>0&&(
+        <div style={{marginBottom:14}}>
+          {scopes.map((m,i)=>(
+            <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',
+              marginBottom:4,background:'var(--bg)',borderRadius:'var(--r)',border:'1px solid var(--b1)'}}>
+              <div style={{display:'flex',flexWrap:'wrap',gap:3,flex:1}}>
+                {(m.groups||[]).map(g=>(
+                  <span key={g} style={{padding:'1px 7px',borderRadius:3,fontSize:10,
+                    background:'rgba(139,92,246,.12)',border:'1px solid rgba(139,92,246,.3)',
+                    color:'var(--purple)',fontWeight:600}}>{g}</span>
+                ))}
+                <span style={{fontSize:10,color:'var(--t3)',alignSelf:'center',margin:'0 4px'}}>→</span>
+                {(m.scopes||[]).map(s=>scopeBadge(s,false))}
+              </div>
+              {isAdmin&&(
+                <button onClick={()=>removeMapping(i)}
+                  style={{...inpStyle,padding:'2px 8px',color:'var(--red)',
+                    border:'1px solid rgba(239,68,68,.3)',cursor:'pointer',background:'transparent'}}>
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add new mapping */}
+      {isAdmin&&(
+        <div style={{padding:12,background:'var(--bg)',borderRadius:'var(--r)',border:'1px solid var(--b1)',marginBottom:14}}>
+          <div style={{fontSize:10,color:'var(--t3)',marginBottom:8}}>Add group → scopes rule</div>
+          <div style={{display:'flex',gap:8,marginBottom:8,alignItems:'center'}}>
+            <input value={newGroup} onChange={e=>setNewGroup(e.target.value)}
+              placeholder="OIDC group name (e.g. medical-staff)"
+              style={{...inpStyle,flex:1}}
+              onFocus={e=>e.target.style.borderColor='var(--purple)'}
+              onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:8}}>
+            {scopeDefs.map(s=>{
+              const sel=newScopes.includes(s.value);
+              return(
+                <span key={s.value} onClick={()=>toggleNewScope(s.value)}
+                  style={{cursor:'pointer',padding:'3px 9px',borderRadius:3,fontSize:10,
+                    fontFamily:'var(--mono)',fontWeight:600,userSelect:'none',
+                    background:sel?(s.danger?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'):'var(--s1)',
+                    border:`1px solid ${sel?(s.danger?'rgba(239,68,68,.4)':'rgba(74,222,128,.4)'):'var(--b2)'}`,
+                    color:sel?(s.danger?'var(--red)':'var(--green)'):'var(--t3)'}}>
+                  {s.value}
+                </span>
+              );
+            })}
+          </div>
+          <button onClick={addMapping} disabled={!newGroup.trim()||!newScopes.length}
+            style={{...inpStyle,background:'var(--purple)',color:'#fff',border:'none',
+              cursor:!newGroup.trim()||!newScopes.length?'not-allowed':'pointer',
+              opacity:!newGroup.trim()||!newScopes.length?.5:1,fontWeight:700}}>
+            + Add mapping
+          </button>
+        </div>
+      )}
+
+      {/* Default scopes */}
+      <div>
+        <div style={{fontSize:10,color:'var(--t3)',marginBottom:6}}>
+          Default scopes (granted to every authenticated user, regardless of group)
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+          {scopeDefs.map(s=>{
+            const sel=defaults.includes(s.value);
+            return(
+              <span key={s.value} onClick={()=>isAdmin&&toggleDefault(s.value)}
+                style={{cursor:isAdmin?'pointer':'default',padding:'3px 9px',borderRadius:3,fontSize:10,
+                  fontFamily:'var(--mono)',fontWeight:600,userSelect:'none',
+                  background:sel?(s.danger?'rgba(239,68,68,.12)':'rgba(74,222,128,.08)'):'var(--s1)',
+                  border:`1px solid ${sel?(s.danger?'rgba(239,68,68,.3)':'rgba(74,222,128,.25)'):'var(--b2)'}`,
+                  color:sel?(s.danger?'var(--red)':'var(--green)'):'var(--t3)'}}>
+                {s.value}
+              </span>
+            );
+          })}
+        </div>
+        {defaults.length===0&&<div style={{fontSize:10,color:'var(--t3)',marginTop:4}}>None — all scanners fire at full strength for every user.</div>}
+      </div>
     </div>
   );
 }
@@ -954,6 +1158,9 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         <CfgRow label="Enabled" sub="Use NLP to detect names, addresses, and freeform PII">
           <Toggle path={['pii','advanced_pii','enabled']} checked={!!sc.pii?.advanced_pii?.enabled}/>
         </CfgRow>
+        <CfgRow label="Sidecar status" sub="Live health of the Presidio Analyzer container">
+          <ScannerStatusBadge name="Presidio PII"/>
+        </CfgRow>
         <CfgRow label="Presidio URL" sub="Endpoint for the Presidio Analyzer sidecar">
           {isAdmin
             ?<input value={sc.pii?.advanced_pii?.url||''} onChange={e=>setField(['pii','advanced_pii','url'],e.target.value)}
@@ -963,6 +1170,38 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         <CfgRow label="Confidence Threshold" sub="Minimum confidence score required to block the request">
           <NumInput path={['pii','advanced_pii','confidence_threshold']} value={sc.pii?.advanced_pii?.confidence_threshold} min={0} max={1} step={0.05}/>
         </CfgRow>
+      </Block>
+
+      <Block id="llm_scanner" name="LLM Scanner (Ollama)" slug="/llm_scanner">
+        <CfgRow label="Enabled" sub="Use a local LLM to catch subtle injections that regex misses (confidence-gated)">
+          <Toggle path={['llm_scanner','enabled']} checked={!!sc.llm_scanner?.enabled}/>
+        </CfgRow>
+        <CfgRow label="Scanner status" sub="Live status of the Ollama model used for classification">
+          <ScannerStatusBadge name="LLM Scanner"/>
+        </CfgRow>
+        <CfgRow label="Ollama URL" sub="Endpoint for the Ollama instance (e.g. http://ollama:11434)">
+          {isAdmin
+            ?<input value={sc.llm_scanner?.url||''} onChange={e=>setField(['llm_scanner','url'],e.target.value)}
+                style={{width:240,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val">{sc.llm_scanner?.url}</span>}
+        </CfgRow>
+        <CfgRow label="Model" sub="Classification model — llama3.2:1b recommended for speed">
+          {isAdmin
+            ?<input value={sc.llm_scanner?.model||''} onChange={e=>setField(['llm_scanner','model'],e.target.value)}
+                style={{width:240,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val">{sc.llm_scanner?.model}</span>}
+        </CfgRow>
+        <CfgRow label="Confidence Threshold" sub="Minimum confidence to block (0.0–1.0)">
+          <NumInput path={['llm_scanner','confidence_threshold']} value={sc.llm_scanner?.confidence_threshold} min={0} max={1} step={0.05}/>
+        </CfgRow>
+        <CfgRow label="Timeout (ms)" sub="Max time to wait for the model response before falling back to regex">
+          <NumInput path={['llm_scanner','timeout_ms']} value={sc.llm_scanner?.timeout_ms} min={200} max={10000} step={100}/>
+        </CfgRow>
+        {sc.llm_scanner?.enabled&&sc.llm_scanner?.model&&(
+          <div style={{fontSize:11,color:'var(--t3)',padding:'6px 0'}}>
+            Pull model: <code style={{color:'var(--yellow)'}}>docker exec ollama ollama pull {sc.llm_scanner.model}</code>
+          </div>
+        )}
       </Block>
 
       {/* SIEM / Webhooks — multiple destinations */}
@@ -1105,6 +1344,9 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
       <Block id="skills_rag" name="Skills RAG & Routing" slug="/skills_rag">
         <CfgRow label="Semantic RAG Enabled" sub="When disabled, proxy instantly falls back to BM25 keyword retrieval.">
           <Toggle path={['skills_rag','enabled']} checked={!!pol?.skills_rag?.enabled} top/>
+        </CfgRow>
+        <CfgRow label="Embedding model status" sub="Live status of the Ollama embedding model">
+          <ScannerStatusBadge name="Semantic RAG"/>
         </CfgRow>
         <CfgRow label="Ollama URL" sub="Endpoint for the embedding model">
           {isAdmin
@@ -2922,6 +3164,237 @@ function InfraTab({stats,role}){
   );
 }
 
+/* ═══ AGENT TOKENS TAB ═══ */
+function TokensTab({role}){
+  const isAdmin=role==='admin';
+  const[data,setData]=useState(null);
+  const[form,setForm]=useState({agent_id:'',description:'',scopes:[],expires_in:'24h'});
+  const[creating,setCreating]=useState(false);
+  const[newToken,setNewToken]=useState(null);
+  const[copied,setCopied]=useState(false);
+  const[revoking,setRevoking]=useState(null);
+
+  const load=()=>api('tokens').then(r=>r.json()).then(setData).catch(()=>{});
+  useEffect(()=>{if(isAdmin)load();},[isAdmin]);
+
+  const toggleScope=(s)=>setForm(f=>({...f,
+    scopes:f.scopes.includes(s)?f.scopes.filter(x=>x!==s):[...f.scopes,s]
+  }));
+
+  const create=async()=>{
+    if(!form.agent_id.trim()||!form.scopes.length)return;
+    setCreating(true);
+    try{
+      const r=await api('tokens',{method:'POST',body:JSON.stringify(form)});
+      const d=await r.json();
+      if(d.error){alert(d.error);return;}
+      setNewToken(d);
+      setForm({agent_id:'',description:'',scopes:[],expires_in:'24h'});
+      load();
+    }catch(e){alert(String(e));}
+    setCreating(false);
+  };
+
+  const revoke=async(id,agentId)=>{
+    if(!confirm(`Revoke token for "${agentId}"? This takes effect immediately — active sessions will lose their scopes.`))return;
+    setRevoking(id);
+    await fetch('/armor/api/tokens/'+id,{method:'DELETE',headers:{Authorization:'Bearer '+_tok}});
+    setRevoking(null);
+    load();
+  };
+
+  const copy=()=>{navigator.clipboard?.writeText(newToken.token);setCopied(true);setTimeout(()=>setCopied(false),2000);};
+
+  const scopeColor=danger=>danger?'rgba(239,68,68,.12)':'rgba(74,222,128,.08)';
+  const scopeBorder=danger=>danger?'rgba(239,68,68,.3)':'rgba(74,222,128,.3)';
+  const scopeText=danger=>'var(--'+( danger?'red':'green')+')';
+
+  if(!isAdmin)return(
+    <div style={{maxWidth:800,margin:'0 auto',padding:24}}>
+      <div className="page-label"><span className="page-label-dot"/><span>Agent Tokens</span><span>·</span><span>Context-Aware Access</span></div>
+      <h1 className="page-headline">Contact an admin to issue<br/>an <span className="accent">agent token</span>.</h1>
+    </div>
+  );
+
+  return(
+    <div style={{maxWidth:900,margin:'0 auto',padding:24}}>
+      <div className="page-label"><span className="page-label-dot"/><span>Agent Tokens</span><span>·</span><span>Context-Aware Access Control</span></div>
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24}}>
+        <h1 className="page-headline">Scoped JWTs let trusted agents<br/>bypass specific <span className="accent">scanners</span>.</h1>
+        <div className="page-meta">
+          <div className="page-meta-row"><span className="page-meta-label">Active</span>
+            <span className="page-meta-val">{data?.tokens?.filter(t=>!t.revoked).length??'—'}</span>
+          </div>
+          <div className="page-meta-row"><span className="page-meta-label">Total</span>
+            <span className="page-meta-val">{data?.tokens?.length??'—'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* One-time token display */}
+      {newToken&&(
+        <div style={{padding:16,marginBottom:20,background:'rgba(74,222,128,.06)',
+          border:'1px solid rgba(74,222,128,.3)',borderRadius:'var(--r)'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+            <span style={{fontSize:12,fontWeight:700,color:'var(--green)'}}>✓ Token issued for {newToken.agent_id}</span>
+            <button onClick={()=>setNewToken(null)} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:16}}>✕</button>
+          </div>
+          <div style={{padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--r)',
+            fontFamily:'var(--mono)',fontSize:11,color:'var(--t2)',wordBreak:'break-all',marginBottom:8}}>
+            {newToken.token}
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <button onClick={copy} style={{padding:'5px 14px',background:'var(--purple)',border:'none',
+              borderRadius:'var(--r)',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'var(--font)'}}>
+              {copied?'Copied!':'Copy Token'}
+            </button>
+            <span style={{fontSize:11,color:'var(--red)',fontWeight:600}}>
+              ⚠ Store this now — it will not be shown again.
+            </span>
+          </div>
+          <div style={{marginTop:8,fontSize:11,color:'var(--t3)'}}>
+            Use as: <code style={{color:'var(--yellow)'}}>Authorization: Bearer {newToken.token.slice(0,40)}…</code>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'grid',gridTemplateColumns:'340px 1fr',gap:16,alignItems:'start'}}>
+
+        {/* Create form */}
+        <div style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',padding:18,background:'var(--s1)'}}>
+          <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',marginBottom:14,textTransform:'uppercase',letterSpacing:'.05em'}}>Issue New Token</div>
+
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>Agent ID *</div>
+            <input value={form.agent_id} onChange={e=>setForm(f=>({...f,agent_id:e.target.value}))}
+              placeholder="e.g. billing-agent, pii-processor"
+              style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none',boxSizing:'border-box'}}
+              onFocus={e=>e.target.style.borderColor='var(--purple)'}
+              onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+          </div>
+
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>Description</div>
+            <input value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))}
+              placeholder="Optional — what this agent does"
+              style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none',boxSizing:'border-box'}}
+              onFocus={e=>e.target.style.borderColor='var(--purple)'}
+              onBlur={e=>e.target.style.borderColor='var(--b2)'}/>
+          </div>
+
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:10,color:'var(--t3)',marginBottom:6}}>Expires in</div>
+            <select value={form.expires_in} onChange={e=>setForm(f=>({...f,expires_in:e.target.value}))}
+              style={{width:'100%',padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--b2)',
+                borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'var(--font)',outline:'none'}}>
+              <option value="1h">1 hour</option>
+              <option value="8h">8 hours</option>
+              <option value="24h">24 hours (default)</option>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+              <option value="">Never</option>
+              <optgroup label="─── Ephemeral / dynamic agents ───" disabled/>
+              <option value="note" disabled>↓ use POST /armor/api/tokens/spawn for these</option>
+            </select>
+          </div>
+
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:'var(--t3)',marginBottom:6}}>Capability scopes *</div>
+            {(data?.defined_scopes||[]).map(s=>{
+              const sel=form.scopes.includes(s.value);
+              return(
+                <div key={s.value} onClick={()=>toggleScope(s.value)}
+                  style={{display:'flex',alignItems:'flex-start',gap:8,padding:'8px 10px',marginBottom:4,
+                    borderRadius:'var(--r)',cursor:'pointer',
+                    background:sel?scopeColor(s.danger):'var(--bg)',
+                    border:`1px solid ${sel?scopeBorder(s.danger):'var(--b1)'}`}}>
+                  <input type="checkbox" checked={sel} readOnly style={{marginTop:2,cursor:'pointer'}}/>
+                  <div>
+                    <div style={{fontSize:11,fontFamily:'var(--mono)',color:sel?scopeText(s.danger):'var(--t2)',fontWeight:sel?700:400}}>
+                      {s.value}
+                      {s.danger&&<span style={{marginLeft:6,fontSize:9,color:'var(--red)'}}>⚠ elevated</span>}
+                    </div>
+                    <div style={{fontSize:10,color:'var(--t3)',marginTop:1}}>{s.description}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <button onClick={create} disabled={creating||!form.agent_id.trim()||!form.scopes.length}
+            style={{width:'100%',padding:'8px',background:'var(--purple)',border:'none',borderRadius:'var(--r)',
+              color:'#fff',fontSize:12,fontWeight:700,cursor:creating||!form.agent_id.trim()||!form.scopes.length?'not-allowed':'pointer',
+              fontFamily:'var(--font)',opacity:creating||!form.agent_id.trim()||!form.scopes.length?.5:1}}>
+            {creating?'Issuing…':'Issue Token'}
+          </button>
+        </div>
+
+        {/* Token list */}
+        <div>
+          {!data?<div className="empty">Loading…</div>
+          :!data.tokens?.length?<div className="empty" style={{padding:'20px 0'}}>No tokens issued yet.</div>
+          :data.tokens.map(t=>(
+            <div key={t.id} style={{border:`1px solid ${t.revoked?'var(--b1)':'var(--b2)'}`,borderRadius:'var(--r)',
+              padding:'12px 14px',marginBottom:8,background:'var(--s1)',opacity:t.revoked?.5:1}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                <div>
+                  <span style={{fontSize:12,fontWeight:700,color:'var(--t2)'}}>{t.agent_id}</span>
+                  {t.description&&<span style={{fontSize:11,color:'var(--t3)',marginLeft:8}}>{t.description}</span>}
+                  {t.revoked&&<span style={{marginLeft:8,fontSize:10,color:'var(--red)',fontWeight:700}}>REVOKED</span>}
+                </div>
+                {!t.revoked&&(
+                  <button onClick={()=>revoke(t.id,t.agent_id)} disabled={revoking===t.id}
+                    style={{padding:'3px 10px',background:'transparent',border:'1px solid rgba(239,68,68,.35)',
+                      borderRadius:'var(--r)',color:'var(--red)',fontSize:11,cursor:'pointer',fontFamily:'var(--font)'}}>
+                    {revoking===t.id?'…':'Revoke'}
+                  </button>
+                )}
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:6}}>
+                {(t.scopes||[]).map(s=>{
+                  const def=(data.defined_scopes||[]).find(d=>d.value===s);
+                  return(
+                    <span key={s} style={{padding:'2px 8px',borderRadius:3,fontSize:10,fontFamily:'var(--mono)',fontWeight:600,
+                      background:scopeColor(def?.danger),border:`1px solid ${scopeBorder(def?.danger)}`,
+                      color:scopeText(def?.danger)}}>
+                      {s}
+                    </span>
+                  );
+                })}
+              </div>
+              <div style={{fontSize:10,color:'var(--t3)',display:'flex',gap:12,flexWrap:'wrap'}}>
+                {t.spawn_depth>0&&(
+                  <span style={{padding:'1px 6px',borderRadius:3,background:'rgba(139,92,246,.12)',
+                    color:'var(--purple)',fontWeight:700}}>
+                    depth {t.spawn_depth} · child
+                  </span>
+                )}
+                <span>ID: <code style={{color:'var(--t2)'}}>{t.id.slice(0,12)}…</code></span>
+                {t.spawned_by&&<span>Parent: <code style={{color:'var(--t2)'}}>{t.spawned_by.slice(0,12)}…</code></span>}
+                <span>Created: {formatTs(t.created_at,'local')}</span>
+                {t.expires_at&&<span style={{color:new Date(t.expires_at)<new Date()?'var(--red)':'var(--t3)'}}>
+                  Expires: {formatTs(t.expires_at,'local')}
+                  {new Date(t.expires_at)<new Date()&&' (expired)'}
+                </span>}
+                {!t.expires_at&&<span>Never expires</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{marginTop:20,padding:'12px 16px',background:'var(--s1)',border:'1px solid var(--b2)',borderRadius:'var(--r)',fontSize:11,color:'var(--t3)'}}>
+        <strong style={{color:'var(--t2)'}}>How it works:</strong> Issue a token for each agent role that needs elevated access.
+        The agent presents it as <code style={{color:'var(--yellow)'}}>Authorization: Bearer &lt;token&gt;</code>.
+        AgentArmor validates the signature and extracts the scopes — the scanner pipeline respects them for that session only.
+        Scanners that are <strong style={{color:'var(--red)'}}>never bypassable</strong>: prompt injection, GoalLock canary, SSRF/DNS, blast radius cap.
+      </div>
+    </div>
+  );
+}
+
 function WASMFiltersCard(){
   const[data,setData]=useState(null);
   const[reloading,setReloading]=useState(false);
@@ -3368,6 +3841,7 @@ function App(){
     {id:'tenants',  num:'08',label:'Tenants'},
     {id:'logs',     num:'09',label:'Logs'},
     {id:'infra',    num:'10',label:'Infrastructure'},
+    {id:'tokens',   num:'11',label:'Agent Tokens'},
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -3434,6 +3908,7 @@ function App(){
         {tab==='tenants'  &&<TenantsTab role={role}/>}
         {tab==='logs'     &&<Logs     role={role}/>}
         {tab==='infra'    &&<InfraTab  stats={stats} role={role}/>}
+        {tab==='tokens'   &&<TokensTab role={role}/>}
       </main>
 
       {/* CmdK — exact AgentArmor.html */}

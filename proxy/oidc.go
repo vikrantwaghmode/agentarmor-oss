@@ -203,6 +203,9 @@ func HandleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleOIDCCallback processes the authorisation code returned by the provider.
+// State encoding:
+//   bare nonce        → dashboard login flow (admin/user role check)
+//   "u:{return}:{nonce}" → chat-user login flow (scopes from group mapping)
 func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// Verify state (CSRF protection)
 	stateCookie, err := r.Cookie("armor_oauth_state")
@@ -210,8 +213,10 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid OAuth2 state — possible CSRF attempt", http.StatusBadRequest)
 		return
 	}
-	// Clear state cookie
 	http.SetCookie(w, &http.Cookie{Name: "armor_oauth_state", MaxAge: -1, Path: "/"})
+
+	stateVal := stateCookie.Value
+	isUserFlow := strings.HasPrefix(stateVal, "u:")
 
 	// Exchange authorisation code for tokens
 	ctx := r.Context()
@@ -222,7 +227,6 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify and parse ID token
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok {
 		http.Error(w, "Authentication failed — no id_token in response", http.StatusInternalServerError)
@@ -235,13 +239,25 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract claims
 	var claims map[string]interface{}
 	if err := idToken.Claims(&claims); err != nil {
 		http.Error(w, "Authentication failed — could not parse claims", http.StatusInternalServerError)
 		return
 	}
 
+	if isUserFlow {
+		// Chat-user flow: derive ABAC scopes from OIDC groups, set aa_user cookie.
+		// State format: "u:{returnTo}:{nonce}"
+		parts := strings.SplitN(strings.TrimPrefix(stateVal, "u:"), ":", 2)
+		returnTo := "/"
+		if len(parts) >= 1 && parts[0] != "" {
+			returnTo = sanitizeReturn(parts[0])
+		}
+		handleUserOIDCCallback(w, r, claims, returnTo)
+		return
+	}
+
+	// Dashboard flow: check admin/user group membership.
 	email := claimString(claims, "email", "sub")
 	name := claimString(claims, "name", "email")
 	role := resolveRole(claims, oidcCfg.AdminGroups, oidcCfg.UserGroups)
@@ -252,7 +268,6 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create session
 	sess := createSession(email, name, role)
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcSessionCookie,

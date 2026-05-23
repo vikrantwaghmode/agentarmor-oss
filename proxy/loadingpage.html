@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentArmor — Initialising</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d0d;color:#d4d4d4;font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
+.card{width:100%;max-width:460px;border:1px solid #1e1e2e;border-radius:12px;
+  background:#111;padding:36px 32px;text-align:center}
+.logo{display:inline-flex;align-items:center;justify-content:center;
+  width:52px;height:52px;border-radius:14px;
+  background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.35);
+  margin:0 auto 18px;font-size:24px}
+.title{font-size:18px;font-weight:700;color:#f0f0f8;margin-bottom:4px}
+.sub{font-size:12px;color:#5555a0;margin-bottom:28px}
+table{width:100%;border-collapse:collapse;margin-bottom:20px;text-align:left}
+td{padding:7px 8px;font-size:11px;border-bottom:1px solid rgba(255,255,255,0.04)}
+td:first-child{width:18px;text-align:center}
+td:last-child{color:#3a3a60;font-size:10px;max-width:160px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ok{color:#4ade80}.wait{color:#fbbf24;animation:pulse 1.2s infinite}.err{color:#f87171}.off{color:#3a3a60}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.note{font-size:11px;color:#3a3a60;line-height:1.7;margin-top:4px}
+code{color:#fbbf24;font-family:inherit}
+#status-sub{font-size:12px;color:#5555a0;min-height:18px;margin-bottom:20px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">⬡</div>
+  <div class="title">AgentArmor</div>
+  <div id="status-sub" class="sub">Initialising security scanners…</div>
+  <table id="scanner-table"><tr><td class="wait">⏳</td><td>Loading…</td><td></td></tr></table>
+  <div class="note">
+    Chat will open automatically once every scanner is operational.<br>
+    ⏳ Starting &nbsp;·&nbsp; ! Model not pulled &nbsp;·&nbsp; ✓ Ready
+  </div>
+</div>
+<script>
+(function(){
+  var RETURN = new URLSearchParams(window.location.search).get('return') || '/';
+  var table  = document.getElementById('scanner-table');
+  var sub    = document.getElementById('status-sub');
+
+  var ICON = {active:'✓',up:'✓',down:'⏳','model-missing':'!',disabled:'—',inactive:'—'};
+  var CLS  = {active:'ok',up:'ok',down:'wait','model-missing':'err',disabled:'off',inactive:'off'};
+  var SHORT = {
+    'Prompt Injection':'Injection','PII / DLP':'PII / DLP',
+    'Secret Redaction':'Secrets','Malicious Content':'Malicious',
+    'Presidio PII':'Presidio','LLM Scanner':'LLM Scanner',
+    'Semantic RAG':'Semantic RAG','WASM Filters':'WASM Filters',
+    'Egress Firewall':'Firewall'
+  };
+
+  function check(){
+    fetch('/armor/api/scanner-status')
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(!data||!Array.isArray(data.scanners)){
+          sub.textContent='Waiting for scanner data…';
+          return;
+        }
+        var scanners = data.scanners;
+        var blocking = scanners.filter(function(s){
+          return s.status==='down'||s.status==='model-missing';
+        });
+
+        /* Rebuild table */
+        table.innerHTML='';
+        scanners.forEach(function(s){
+          var detail = s.status==='down' ? 'starting…' : (s.detail||s.status);
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td class="'+(CLS[s.status]||'off')+'">'+(ICON[s.status]||'?')+'</td>'+
+            '<td>'+(SHORT[s.name]||s.name)+'</td>'+
+            '<td title="'+detail+'">'+detail+'</td>';
+          table.appendChild(tr);
+        });
+
+        if(blocking.length===0){
+          sub.textContent='All scanners ready — opening chat…';
+          sub.style.color='#4ade80';
+          setTimeout(function(){ window.location.replace(RETURN); }, 800);
+        } else {
+          sub.textContent=blocking.length+' scanner(s) still initialising…';
+        }
+      })
+      .catch(function(){
+        sub.textContent='AgentArmor unreachable — retrying…';
+      });
+  }
+
+  check();
+  setInterval(check, 3000);
+})();
+</script>
+</body>
+</html>
