@@ -201,6 +201,7 @@ type Config struct {
 		DefaultScopes []string `yaml:"default_scopes" json:"default_scopes"`
 	} `yaml:"sso" json:"sso"`
 	AgentRouting AgentRoutingConfig `yaml:"agent_routing" json:"agent_routing"`
+	ATRRules     ATRConfig          `yaml:"atr_rules" json:"atr_rules"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -2687,6 +2688,22 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		}
 	}
 
+	// --- ATR (Agent Threat Rules) ---
+	if atrRuleCount > 0 {
+		if match, ok := checkATRRules(contentToScan, direction); ok {
+			label := fmt.Sprintf("ATR [%s/%s] %s: %s", match.Severity, match.Category, match.RuleID, match.Title)
+			if match.blocks() {
+				result.Blocked = true
+				result.RuleMatched = label
+				go addAlert("ATR_BLOCK", fmt.Sprintf("rule=%s severity=%s category=%s", match.RuleID, match.Severity, match.Category))
+				return result
+			}
+			// alert-only (escalate / reduce_permissions): log and continue
+			go addAlert("ATR_ALERT", fmt.Sprintf("rule=%s severity=%s category=%s", match.RuleID, match.Severity, match.Category))
+			log.Printf("⚠️  ATR alert: %s", label)
+		}
+	}
+
 	// --- Secrets (redact) ---
 	if policy.Scanners.Secrets.Enabled &&
 		!sessionHasAnyScope(tnt, sessionKey, policy.Scanners.Secrets.AllowScopes) {
@@ -4571,6 +4588,7 @@ func main() {
 	go cleanupRateLimiters()
 	go cleanupExpiredApprovals()
 	go startThreatFeeds()
+	go startATRLoader()
 
 	targetURL := os.Getenv("TARGET_URL")
 	if targetURL == "" {

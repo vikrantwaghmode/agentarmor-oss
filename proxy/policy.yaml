@@ -515,3 +515,11 @@ skills_rag:
     model: nomic-embed-text
     auto_route: true
     auto_route_threshold: 0.7
+
+# ── ATR (Agent Threat Rules) ─────────────────────────────────────────────────
+atr_rules:
+    enabled: true
+    rules_dir: ./atr-rules
+    poll_interval_minutes: 60
+    min_severity: medium
+    include_experimental: false

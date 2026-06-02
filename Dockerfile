@@ -39,7 +39,7 @@ COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go \
+    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go \
     && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./cmd/firewall
 
 # --- Stage 3: Final runtime ---
@@ -82,6 +82,7 @@ COPY tenants/ /app/tenants/
 # Copy default skills (volume-mounted at runtime for live updates)
 COPY skills/ /app/skills/
 COPY wasm-filters/ /app/wasm-filters/
+COPY atr-rules/ /app/atr-rules/
 
 # Copy the entrypoint
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh

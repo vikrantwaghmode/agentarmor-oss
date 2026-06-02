@@ -225,6 +225,17 @@ skills_rag:
     auto_route: true
     auto_route_threshold: 0.7
 
+# ── ATR (Agent Threat Rules) ─────────────────────────────────────────────────
+# Drop YAML rule files from https://github.com/Agent-Threat-Rule/agent-threat-rules
+# into ./atr-rules/ (any sub-directory structure is fine — all .yaml files are loaded).
+# Rules are hot-reloaded every poll_interval_minutes without a container restart.
+atr_rules:
+    enabled: true
+    rules_dir: ./atr-rules
+    poll_interval_minutes: 60
+    min_severity: medium       # informational | low | medium | high | critical
+    include_experimental: false
+
 # ── Agent Routing — controls which agents may spawn child tokens ─────────────
 # When enabled, only listed parent→children patterns are permitted.
 # Requires the parent to hold the agent:spawn scope.

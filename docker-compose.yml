@@ -29,6 +29,7 @@ services:
       - ./tenants:/app/tenants          # Per-tenant configs — created from dashboard or by hand
       - ./skills:/app/skills            # Live-editable skill definitions + RAG docs
       - ./wasm-filters:/app/wasm-filters # Custom WASM filters — hot-reloaded from dashboard
+      - ./atr-rules:/app/atr-rules      # ATR rules — drop .yaml files here, hot-reloaded
     restart: unless-stopped
     env_file:
       - .env

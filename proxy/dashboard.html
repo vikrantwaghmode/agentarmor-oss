@@ -1340,6 +1340,42 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         {isAdmin&&<button onClick={addFeed} className="tag-add-btn" style={{width:'100%',padding:'7px',textAlign:'center'}}>+ Add intelligence feed</button>}
       </Block>
 
+      {/* ATR Rules */}
+      <Block id="atr_rules" name="ATR (Agent Threat Rules)" slug="/atr_rules">
+        <CfgRow label="Enabled" sub="Run 459 community-maintained detection rules from github.com/Agent-Threat-Rule/agent-threat-rules against every message">
+          <Toggle path={['atr_rules','enabled']} checked={!!pol?.atr_rules?.enabled} top/>
+        </CfgRow>
+        <CfgRow label="Rule status" sub="Live count of loaded ATR rules">
+          <ScannerStatusBadge name="ATR Rules"/>
+        </CfgRow>
+        <CfgRow label="Rules directory" sub="Directory scanned for .yaml rule files (relative to /app)">
+          {isAdmin
+            ?<input value={pol?.atr_rules?.rules_dir||'./atr-rules'} onChange={e=>setTopField(['atr_rules','rules_dir'],e.target.value)}
+                style={{width:220,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+            :<span className="ro-val" style={{fontFamily:'monospace'}}>{pol?.atr_rules?.rules_dir||'./atr-rules'}</span>}
+        </CfgRow>
+        <CfgRow label="Minimum severity" sub="Rules below this level are skipped (informational → low → medium → high → critical)">
+          {isAdmin
+            ?<select value={pol?.atr_rules?.min_severity||'medium'} onChange={e=>setTopField(['atr_rules','min_severity'],e.target.value)}
+                style={{padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t2)',fontSize:11,outline:'none',cursor:'pointer'}}>
+                <option value="informational">informational (all rules)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="critical">critical only</option>
+              </select>
+            :<span className="ro-val">{pol?.atr_rules?.min_severity||'medium'}</span>}
+        </CfgRow>
+        <CfgRow label="Poll interval (min)" sub="How often to re-scan the rules directory for changes">
+          {isAdmin
+            ?<input type="number" className="cfg-num" value={pol?.atr_rules?.poll_interval_minutes||60} min={1} onChange={e=>setTopField(['atr_rules','poll_interval_minutes'],+e.target.value)}/>
+            :<span className="ro-val">{pol?.atr_rules?.poll_interval_minutes||60} min</span>}
+        </CfgRow>
+        <CfgRow label="Include experimental" sub="Load rules with status: experimental in addition to stable">
+          <Toggle path={['atr_rules','include_experimental']} checked={!!pol?.atr_rules?.include_experimental}/>
+        </CfgRow>
+      </Block>
+
       {/* Skills RAG & Routing */}
       <Block id="skills_rag" name="Skills RAG & Routing" slug="/skills_rag">
         <CfgRow label="Semantic RAG Enabled" sub="When disabled, proxy instantly falls back to BM25 keyword retrieval.">

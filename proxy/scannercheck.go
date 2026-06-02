@@ -203,6 +203,31 @@ func buildScannerStatus() map[string]interface{} {
 	}
 	entries = append(entries, probeEntries...)
 
+	// ── ATR (Agent Threat Rules) ──────────────────────────────────────────────
+	policyLock.RLock()
+	atrEnabled := policy.ATRRules.Enabled
+	atrDir     := policy.ATRRules.RulesDir
+	policyLock.RUnlock()
+	if atrEnabled {
+		atrRulesLock.RLock()
+		n := atrRuleCount
+		atrRulesLock.RUnlock()
+		status := "active"
+		detail := fmt.Sprintf("%d rules loaded", n)
+		if n == 0 {
+			status = "inactive"
+			detail = fmt.Sprintf("no rules in %s", atrDir)
+		}
+		entries = append(entries, scannerEntry{
+			Name: "ATR Rules", Type: "regex", Status: status, Detail: detail,
+		})
+	} else {
+		entries = append(entries, scannerEntry{
+			Name: "ATR Rules", Type: "regex", Status: "disabled",
+			Detail: "enable atr_rules in policy",
+		})
+	}
+
 	// ── WASM filters ─────────────────────────────────────────────────────────
 	if wasmEnabled {
 		filters := ListWASMFilters()

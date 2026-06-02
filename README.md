@@ -49,6 +49,7 @@ AgentArmor is built around three principles:
 |-------------------|-----------|--------|-----------------|
 | Prompt Injection | In | Block | Jailbreaks, instruction overrides, false authority claims, social engineering, data exfiltration (100+ rules across 6 categories; structural regex patterns bypass paraphrasing) |
 | LLM Scanner | In | Block | Subtle injections that evade regex — Ollama `llama3.2:3b`, confidence-gated (0.85); warm-up on startup prevents cold-start circuit trips |
+| ATR Rules | Both | Block / Alert | 459 community-maintained detection rules from [ATR — Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) baked in across 10 threat categories; enable/disable and configure severity threshold from the dashboard |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -258,6 +259,16 @@ skills_rag:
   model: "nomic-embed-text"        # docker exec ollama ollama pull nomic-embed-text
   auto_route: true                  # route each message to best-matching skill automatically
   auto_route_threshold: 0.70
+
+# ATR (Agent Threat Rules) — 459 community-maintained rules, baked in by default
+# Rule corpus: https://github.com/Agent-Threat-Rule/agent-threat-rules
+# Credit: Adam Lin (林冠辛) and the ATR community — MIT License
+atr_rules:
+  enabled: true
+  rules_dir: "./atr-rules"
+  min_severity: medium             # informational | low | medium | high | critical
+  poll_interval_minutes: 60
+  include_experimental: false
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -763,10 +774,25 @@ agent_routing:
 - [x] **Helm OCI registry** — chart published to `ghcr.io/vikrantwaghmode/agentarmor` via GitHub Actions on every release tag; `helm install oci://ghcr.io/vikrantwaghmode/agentarmor --version x.y.z`
 - [x] **Audit date-range filter** — `From` / `To` datetime-local pickers in the export dropdown; filters passed as RFC3339 `?from=` / `?to=` params; active date range shown in the filter summary strip
 - [x] **Context-aware ABAC / agent tokens** — scoped JWTs gate every scanner; ephemeral child tokens for dynamic multi-agent systems; `POST /armor/api/tokens/spawn` for parent→child issuance with scope subsetting; cascading revocation; `agent_routing` policy for approved call patterns
+- [x] **ATR rules (459 rules)** — full [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) corpus baked in; native Go engine evaluates all six detection operators with AND/OR/NOT logic; field-to-direction mapping (user_input → inbound, agent_output → outbound); enable/disable and severity filtering from the dashboard
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring
 - [ ] **Tenant policy templates** — create tenants from a named policy template instead of copying root policy
+
+## Acknowledgements
+
+### ATR — Agent Threat Rules
+
+AgentArmor ships with the full [ATR (Agent Threat Rules)](https://github.com/Agent-Threat-Rule/agent-threat-rules) rule corpus (459 rules across 10 threat categories) baked in by default.
+
+ATR is an open detection rule format for AI agent security threats — the [Sigma](https://github.com/SigmaHQ/sigma) of AI agent detection. Rules are vendor-neutral YAML documents covering prompt injection, agent manipulation, tool poisoning, context exfiltration, privilege escalation, and more.
+
+**ATR is created and maintained by [Adam Lin (林冠辛)](https://github.com/eeee2345)** (adam@agentthreatrule.org) and the ATR community.
+
+The ATR rule corpus is licensed under the **[MIT License](https://github.com/Agent-Threat-Rule/agent-threat-rules/blob/main/LICENSE)** and is used here unmodified in accordance with that license.
+
+If you find ATR useful, consider [sponsoring the project](https://opencollective.com/agent-threat-rules) or [contributing rules](https://github.com/Agent-Threat-Rule/agent-threat-rules/blob/main/CONTRIBUTING.md).
 
 ## Contributing
 
