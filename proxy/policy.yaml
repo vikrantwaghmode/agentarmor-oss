@@ -523,3 +523,13 @@ atr_rules:
     poll_interval_minutes: 60
     min_severity: medium
     include_experimental: false
+
+# ── Document Conversion — PDF/Word/Excel/PowerPoint uploads → Markdown ───────
+# Converts file uploads to Markdown (via doc2md) before they reach the LLM,
+# so DLP/prompt-injection scanners can inspect real document content instead
+# of letting binary blobs sail through untouched, and so the LLM receives a
+# smaller, cleaner representation (token savings).
+doc_conversion:
+    enabled: true
+    max_file_size_mb: 20
+    timeout_seconds: 30

@@ -39,7 +39,7 @@ COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go \
+    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go ./docconv.go \
     && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./cmd/firewall
 
 # --- Stage 3: Final runtime ---
@@ -53,8 +53,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     openssl \
     python3 \
+    python3-pip \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# doc2md — converts uploaded PDF/Word/Excel/PowerPoint documents to Markdown
+# so AgentArmor can scan real document content (and the LLM gets a smaller,
+# cleaner representation). https://github.com/vikrantwaghmode/doc2md (MIT)
+RUN pip3 install --no-cache-dir --break-system-packages \
+    "doc2md[tokens] @ git+https://github.com/vikrantwaghmode/doc2md.git"
 
 # Create the openclaw user and directories
 RUN useradd -m -s /bin/bash openclaw || true

@@ -109,23 +109,23 @@ type scannerEntry struct {
 
 func buildScannerStatus() map[string]interface{} {
 	policyLock.RLock()
-	piEnabled   := policy.Scanners.PromptInjection.Enabled
-	piRules     := len(policy.Scanners.PromptInjection.BlockedPhrases)
-	piiEnabled  := policy.Scanners.PII.Enabled
-	piiRules    := len(policy.Scanners.PII.BlockPatterns)
+	piEnabled := policy.Scanners.PromptInjection.Enabled
+	piRules := len(policy.Scanners.PromptInjection.BlockedPhrases)
+	piiEnabled := policy.Scanners.PII.Enabled
+	piiRules := len(policy.Scanners.PII.BlockPatterns)
 	presEnabled := policy.Scanners.PII.AdvancedPII.Enabled
-	presURL     := policy.Scanners.PII.AdvancedPII.URL
-	secEnabled  := policy.Scanners.Secrets.Enabled
-	secRules    := len(policy.Scanners.Secrets.RedactPatterns)
-	malEnabled  := policy.Scanners.MaliciousContent.Enabled
-	malRules    := len(policy.Scanners.MaliciousContent.BlockPatterns)
-	llmEnabled  := policy.Scanners.LLMScanner.Enabled
-	llmURL      := policy.Scanners.LLMScanner.URL
-	llmModel    := policy.Scanners.LLMScanner.Model
-	ragEnabled  := policy.SkillsRAG.Enabled
-	ragURL      := policy.SkillsRAG.URL
-	ragModel    := policy.SkillsRAG.Model
-	fwDomains   := globalRuleCounts.FirewallDomains
+	presURL := policy.Scanners.PII.AdvancedPII.URL
+	secEnabled := policy.Scanners.Secrets.Enabled
+	secRules := len(policy.Scanners.Secrets.RedactPatterns)
+	malEnabled := policy.Scanners.MaliciousContent.Enabled
+	malRules := len(policy.Scanners.MaliciousContent.BlockPatterns)
+	llmEnabled := policy.Scanners.LLMScanner.Enabled
+	llmURL := policy.Scanners.LLMScanner.URL
+	llmModel := policy.Scanners.LLMScanner.Model
+	ragEnabled := policy.SkillsRAG.Enabled
+	ragURL := policy.SkillsRAG.URL
+	ragModel := policy.SkillsRAG.Model
+	fwDomains := globalRuleCounts.FirewallDomains
 	policyLock.RUnlock()
 
 	client := &http.Client{Timeout: 800 * time.Millisecond}
@@ -206,7 +206,7 @@ func buildScannerStatus() map[string]interface{} {
 	// ── ATR (Agent Threat Rules) ──────────────────────────────────────────────
 	policyLock.RLock()
 	atrEnabled := policy.ATRRules.Enabled
-	atrDir     := policy.ATRRules.RulesDir
+	atrDir := policy.ATRRules.RulesDir
 	policyLock.RUnlock()
 	if atrEnabled {
 		atrRulesLock.RLock()
@@ -225,6 +225,26 @@ func buildScannerStatus() map[string]interface{} {
 		entries = append(entries, scannerEntry{
 			Name: "ATR Rules", Type: "regex", Status: "disabled",
 			Detail: "enable atr_rules in policy",
+		})
+	}
+
+	// ── Document Conversion (doc2md) ─────────────────────────────────────────
+	policyLock.RLock()
+	docConvEnabled := policy.DocConversion.Enabled
+	policyLock.RUnlock()
+	if docConvEnabled {
+		status, detail := "active", "doc2md ready — PDF/Word/Excel/PowerPoint uploads converted to Markdown before scanning"
+		if !docConverterAvailable() {
+			status = "down"
+			detail = "doc2md binary not found on PATH — install it in the runtime image"
+		}
+		entries = append(entries, scannerEntry{
+			Name: "Document Conversion", Type: "subprocess", Status: status, Detail: detail,
+		})
+	} else {
+		entries = append(entries, scannerEntry{
+			Name: "Document Conversion", Type: "subprocess", Status: "disabled",
+			Detail: "enable doc_conversion in policy to scan PDF/Word/Excel/PowerPoint uploads",
 		})
 	}
 

@@ -50,6 +50,7 @@ AgentArmor is built around three principles:
 | Prompt Injection | In | Block | Jailbreaks, instruction overrides, false authority claims, social engineering, data exfiltration (100+ rules across 6 categories; structural regex patterns bypass paraphrasing) |
 | LLM Scanner | In | Block | Subtle injections that evade regex — Ollama `llama3.2:3b`, confidence-gated (0.85); warm-up on startup prevents cold-start circuit trips |
 | ATR Rules | Both | Block / Alert | 459 community-maintained detection rules from [ATR — Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) baked in across 10 threat categories; enable/disable and configure severity threshold from the dashboard |
+| Document Conversion | In | Convert + Scan | PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding — closes the binary-upload DLP/injection bypass and cuts LLM token usage |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -269,6 +270,15 @@ atr_rules:
   min_severity: medium             # informational | low | medium | high | critical
   poll_interval_minutes: 60
   include_experimental: false
+
+# Document Conversion — PDF/Word/Excel/PowerPoint uploads → Markdown
+# Converts file uploads to Markdown via doc2md (https://github.com/vikrantwaghmode/doc2md)
+# before scanning & forwarding — closes the binary-upload DLP/injection bypass
+# (binary documents otherwise skip every text-based scanner) and cuts token usage.
+doc_conversion:
+  enabled: true
+  max_file_size_mb: 20             # uploads larger than this pass through unconverted
+  timeout_seconds: 30              # per-file conversion timeout
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -319,6 +329,7 @@ agentarmor-oss/
 ├── proxy/
 │   ├── main.go          # Core proxy, scanners, WS handler, API endpoints, repave features
 │   ├── scannercheck.go  # Scanner status probes, startup gate, badge API
+│   ├── docconv.go       # Document conversion — PDF/Word/Excel/PowerPoint uploads → Markdown via doc2md, scanned before forwarding
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
 │   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
 │   ├── tokens.go        # Agent token issuance, ABAC scopes, spawn-chain
@@ -775,6 +786,7 @@ agent_routing:
 - [x] **Audit date-range filter** — `From` / `To` datetime-local pickers in the export dropdown; filters passed as RFC3339 `?from=` / `?to=` params; active date range shown in the filter summary strip
 - [x] **Context-aware ABAC / agent tokens** — scoped JWTs gate every scanner; ephemeral child tokens for dynamic multi-agent systems; `POST /armor/api/tokens/spawn` for parent→child issuance with scope subsetting; cascading revocation; `agent_routing` policy for approved call patterns
 - [x] **ATR rules (459 rules)** — full [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) corpus baked in; native Go engine evaluates all six detection operators with AND/OR/NOT logic; field-to-direction mapping (user_input → inbound, agent_output → outbound); enable/disable and severity filtering from the dashboard
+- [x] **Document conversion (doc2md)** — PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding; closes the binary-upload DLP/injection bypass (documents previously skipped every text-based scanner) and cuts LLM token usage; configurable size/timeout limits, enable/disable from the dashboard
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring
@@ -793,6 +805,10 @@ ATR is an open detection rule format for AI agent security threats — the [Sigm
 The ATR rule corpus is licensed under the **[MIT License](https://github.com/Agent-Threat-Rule/agent-threat-rules/blob/main/LICENSE)** and is used here unmodified in accordance with that license.
 
 If you find ATR useful, consider [sponsoring the project](https://opencollective.com/agent-threat-rules) or [contributing rules](https://github.com/Agent-Threat-Rule/agent-threat-rules/blob/main/CONTRIBUTING.md).
+
+### doc2md
+
+Document conversion is powered by [doc2md](https://github.com/vikrantwaghmode/doc2md), an MIT-licensed Python tool that converts PDF, Word, Excel, and PowerPoint files into clean, LLM-friendly Markdown. AgentArmor invokes it as a subprocess to convert uploads before they reach the scanners and the LLM.
 
 ## Contributing
 

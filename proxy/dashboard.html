@@ -1376,6 +1376,26 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         </CfgRow>
       </Block>
 
+      {/* Document Conversion */}
+      <Block id="doc_conversion" name="Document Conversion" slug="/doc_conversion">
+        <CfgRow label="Enabled" sub="Convert PDF/Word/Excel/PowerPoint uploads to Markdown via doc2md before scanning & forwarding — closes the binary-upload DLP/injection bypass and cuts LLM token usage">
+          <Toggle path={['doc_conversion','enabled']} checked={!!pol?.doc_conversion?.enabled} top/>
+        </CfgRow>
+        <CfgRow label="Converter status" sub="Whether the doc2md binary is available in the runtime image">
+          <ScannerStatusBadge name="Document Conversion"/>
+        </CfgRow>
+        <CfgRow label="Max file size (MB)" sub="Uploads larger than this are passed through unconverted (and unscanned at the document layer)">
+          {isAdmin
+            ?<input type="number" className="cfg-num" value={pol?.doc_conversion?.max_file_size_mb||20} min={1} onChange={e=>setTopField(['doc_conversion','max_file_size_mb'],+e.target.value)}/>
+            :<span className="ro-val">{pol?.doc_conversion?.max_file_size_mb||20} MB</span>}
+        </CfgRow>
+        <CfgRow label="Conversion timeout (sec)" sub="Per-file timeout for the doc2md subprocess">
+          {isAdmin
+            ?<input type="number" className="cfg-num" value={pol?.doc_conversion?.timeout_seconds||30} min={1} onChange={e=>setTopField(['doc_conversion','timeout_seconds'],+e.target.value)}/>
+            :<span className="ro-val">{pol?.doc_conversion?.timeout_seconds||30}s</span>}
+        </CfgRow>
+      </Block>
+
       {/* Skills RAG & Routing */}
       <Block id="skills_rag" name="Skills RAG & Routing" slug="/skills_rag">
         <CfgRow label="Semantic RAG Enabled" sub="When disabled, proxy instantly falls back to BM25 keyword retrieval.">

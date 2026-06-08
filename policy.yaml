@@ -236,6 +236,17 @@ atr_rules:
     min_severity: medium       # informational | low | medium | high | critical
     include_experimental: false
 
+# ── Document Conversion — PDF/Word/Excel/PowerPoint uploads → Markdown ───────
+# File uploads embedded in chat requests (base64 PDF/DOCX/XLSX/PPTX/etc.) are
+# converted to Markdown via doc2md (https://github.com/vikrantwaghmode/doc2md)
+# before being scanned and forwarded to the LLM. This closes a DLP/injection
+# bypass — binary documents otherwise skip every text-based scanner — and cuts
+# token usage since Markdown is far more compact than raw extracted text.
+doc_conversion:
+    enabled: true
+    max_file_size_mb: 20       # uploads larger than this pass through unconverted
+    timeout_seconds: 30        # per-file conversion timeout
+
 # ── Agent Routing — controls which agents may spawn child tokens ─────────────
 # When enabled, only listed parent→children patterns are permitted.
 # Requires the parent to hold the agent:spawn scope.

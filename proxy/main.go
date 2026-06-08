@@ -188,7 +188,7 @@ type Config struct {
 		AdminGroups  []string `yaml:"admin_groups" json:"admin_groups"`
 		UserGroups   []string `yaml:"user_groups" json:"user_groups"`
 		Scopes       []string `yaml:"scopes" json:"scopes"`
-		ProviderName string `yaml:"provider_name,omitempty" json:"provider_name,omitempty"`
+		ProviderName string   `yaml:"provider_name,omitempty" json:"provider_name,omitempty"`
 		// GroupsClaim is the OIDC token claim that contains group memberships.
 		// Azure AD: "groups" (GUIDs by default; configure optional claims for names).
 		// Okta / Auth0: "groups". Keycloak: "groups". PingFederate / ADFS: often custom.
@@ -200,8 +200,9 @@ type Config struct {
 		// Scopes granted to every authenticated user regardless of group membership.
 		DefaultScopes []string `yaml:"default_scopes" json:"default_scopes"`
 	} `yaml:"sso" json:"sso"`
-	AgentRouting AgentRoutingConfig `yaml:"agent_routing" json:"agent_routing"`
-	ATRRules     ATRConfig          `yaml:"atr_rules" json:"atr_rules"`
+	AgentRouting  AgentRoutingConfig  `yaml:"agent_routing" json:"agent_routing"`
+	ATRRules      ATRConfig           `yaml:"atr_rules" json:"atr_rules"`
+	DocConversion DocConversionConfig `yaml:"doc_conversion" json:"doc_conversion"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -2308,7 +2309,7 @@ func scanWithLLM(content, baseURL, model string, threshold float64, timeoutMs in
 func warmupLLMScanner() {
 	policyLock.RLock()
 	enabled := policy.Scanners.LLMScanner.Enabled
-	llmURL   := policy.Scanners.LLMScanner.URL
+	llmURL := policy.Scanners.LLMScanner.URL
 	llmModel := policy.Scanners.LLMScanner.Model
 	policyLock.RUnlock()
 
@@ -2401,6 +2402,17 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 						}
 						if content, ok := msg["content"].(string); ok && content != "" {
 							parts = append(parts, content)
+						} else if blocks, ok := msg["content"].([]interface{}); ok {
+							// Array-form content (vision/file uploads, doc2md
+							// conversions): scan every "text" block — this is
+							// also where converted document Markdown lands.
+							for _, b := range blocks {
+								if block, ok := b.(map[string]interface{}); ok {
+									if t, _ := block["text"].(string); t != "" {
+										parts = append(parts, t)
+									}
+								}
+							}
 						}
 					}
 				}
@@ -2862,17 +2874,17 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			tlsMode = "custom"
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"blocked":          b,
-			"redacted":         rd,
-			"allowed":          al,
-			"total":            b + rd + al,
-			"uptime":           time.Since(statsStarted).Truncate(time.Second).String(),
-			"start_time":       statsStarted.Format(time.RFC3339),
-			"secrets_provider":  secretsProviderName,
-			"db_driver":         dbDriver,
-			"redis_enabled":     redisEnabled,
-			"acme_domain":       os.Getenv("ACME_DOMAIN"),
-			"tls_mode":          tlsMode,
+			"blocked":             b,
+			"redacted":            rd,
+			"allowed":             al,
+			"total":               b + rd + al,
+			"uptime":              time.Since(statsStarted).Truncate(time.Second).String(),
+			"start_time":          statsStarted.Format(time.RFC3339),
+			"secrets_provider":    secretsProviderName,
+			"db_driver":           dbDriver,
+			"redis_enabled":       redisEnabled,
+			"acme_domain":         os.Getenv("ACME_DOMAIN"),
+			"tls_mode":            tlsMode,
 			"infra_needs_restart": infraNeedsRestart,
 			"otel_enabled":        otelEnabled,
 			"otel_endpoint":       otelEndpoint,
@@ -3486,7 +3498,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			var scopesJSON string
 			var revoked int
 			rows.Scan(&t.ID, &t.AgentID, &t.Description, &scopesJSON, &t.ExpiresAt, &t.CreatedAt, &revoked, &t.SpawnedBy, &t.SpawnDepth) //nolint:errcheck
-			json.Unmarshal([]byte(scopesJSON), &t.Scopes)                                                                                  //nolint:errcheck
+			json.Unmarshal([]byte(scopesJSON), &t.Scopes)                                                                                //nolint:errcheck
 			t.Revoked = revoked == 1
 			tokens = append(tokens, t)
 		}
@@ -3494,8 +3506,8 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			tokens = []TokenRow{}
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"tokens":          tokens,
-			"defined_scopes":  AllDefinedScopes,
+			"tokens":         tokens,
+			"defined_scopes": AllDefinedScopes,
 		})
 
 	// POST /armor/api/tokens — issue a new scoped agent token (admin only)
@@ -4040,7 +4052,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 					},
 				})
 				clientConn.WriteMessage(websocket.TextMessage, errFrame) //nolint:errcheck
-				continue // keep the WebSocket alive
+				continue                                                 // keep the WebSocket alive
 			}
 
 			// Only scan text frames; binary frames pass through
@@ -4087,7 +4099,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 						},
 					})
 					clientConn.WriteMessage(websocket.TextMessage, errFrame) //nolint:errcheck
-					continue // keep the WebSocket alive
+					continue                                                 // keep the WebSocket alive
 				}
 
 				if result.Redacted {
@@ -4199,6 +4211,22 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 	if r.Method == http.MethodPost {
 		bodyBytes, _ := io.ReadAll(r.Body)
 		payload := string(bodyBytes)
+
+		// ──── Document Conversion (PDF/Word/Excel/PowerPoint → Markdown) ────
+		// Runs before scanning so DLP/injection scanners see real document
+		// content (binary uploads otherwise sail through text-based filters
+		// untouched), and the LLM receives compact Markdown instead of a
+		// binary blob.
+		policyLock.RLock()
+		docConvCfg := policy.DocConversion
+		policyLock.RUnlock()
+		if docConvCfg.Enabled {
+			if rewritten, files := convertDocumentAttachments(payload, docConvCfg); len(files) > 0 {
+				payload = rewritten
+				log.Printf("📄 doc2md converted %d upload(s) to Markdown: %s", len(files), strings.Join(files, ", "))
+				go addAlert("DOC_CONVERTED", fmt.Sprintf("converted %d upload(s) to Markdown: %s", len(files), strings.Join(files, ", ")))
+			}
+		}
 
 		result := scanPayload(payload, "Request", sessionKey, tnt)
 
