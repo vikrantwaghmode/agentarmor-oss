@@ -15,12 +15,12 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
 
 ```text
 ┌─────────────┐         ┌──────────────────────────────────────────────────┐      ┌───────────────┐
-│              │        │              AgentArmor Environment              │      │               │
-│ Client Apps  │HTTPS/WS│  ┌────────────────┐     ┌─────────────────────┐  │Egress│ External LLMs │
-│ (Browser,    ├────────┼─▶│ AgentArmor     ├────▶│ iptables Firewall   ├──┼─────▶│ (OpenAI,      │
-│ OpenClaw,    │◀───────┼─│ Proxy (L7)     │     │ (L3/L4)             │  │◀─────┤ Anthropic,    │
-│ IDE, etc.)   │        │  │ - Scanners     │     │ - Zero-Trust Egress │  │      │ Gemini, etc.) │
-│              │        │  │ - RAG/Skills   │     └─────────────────────┘  |      │               │
+│             │         │              AgentArmor Environment              │      │               │
+│ Client Apps │ HTTPS/WS│  ┌────────────────┐     ┌─────────────────────┐  │Egress│ External LLMs │
+│ (Browser,   ├─────────┼─▶│ AgentArmor     ├────▶│ iptables Firewall   ├──┼─────▶│ (OpenAI,      │
+│ OpenClaw,   │◀────────┼──│ Proxy (L7)     │     │ (L3/L4)             │  │◀─────┤ Anthropic,    │
+│ IDE, etc.)  │         │  │ - Scanners     │     │ - Zero-Trust Egress │  │      │ Gemini, etc.) │
+│             │         │  │ - RAG/Skills   │     └─────────────────────┘  |      │               │
 └─────────────┘         │  └─┬──────┬─────┬─┘                              │      └───────────────┘
                         │    │      │     │                                │
                         │    ▼      ▼     └──▶ ┌───────────────────────┐   │
@@ -28,8 +28,7 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
                         │ │Ollama│ │Presidio │ └───────────┬───────────┘   │
                         │ │(LLM) │ │(PII/DLP)│             ▼               │
                         │ └──────┘ └─────────┘ ┌───────────────────────┐   │
-                        │                           │   Audit DB (SQLite)  │   
-                        │                      └───────────────────────┘   │
+                        │                      │   Audit DB (SQLite)   │   │                     │                      └───────────────────────┘   │
                         └──────────────────────────────────────────────────┘
 ```
 
@@ -380,7 +379,7 @@ The default out-of-the-box setup. One `docker compose up` command, no external d
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Single host / developer laptop                      │
+│  Single host / developer laptop                     │
 │                                                     │
 │  ┌──────────────┐   HTTPS :8443   ┌──────────────┐  │
 │  │  Browser /   │────────────────▶│  AgentArmor  │  │
@@ -388,8 +387,8 @@ The default out-of-the-box setup. One `docker compose up` command, no external d
 │  └──────────────┘                 │  + Presidio  │  │
 │                                   │  SQLite DB   │  │
 │                                   └──────┬───────┘  │
-│                                          │ HTTPS     │
-│                                   LLM API (external) │
+│                                          │ HTTPS    │
+│                                   LLM API (external)│
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -451,21 +450,21 @@ Multiple proxy instances behind a load balancer, shared PostgreSQL + Redis, per-
 
 ```
                     ┌───────────────────────────────────────────────────────┐
-                    │   Enterprise Private Network / VPC                     │
+                    │   Enterprise Private Network / VPC                    │
                     │                                                       │
-  Team Alpha ──────▶│  ┌──────────────┐       ┌───────────────────────┐   │
-  (X-Tenant-ID:     │  │  Load         │       │  AgentArmor  (×N)     │   │
-   team-alpha)      │  │  Balancer /   │──────▶│  - Policy per tenant  │──▶│──▶ LLM APIs
-                    │  │  API Gateway  │       │  - Shared PostgreSQL   │   │
-  Team Beta ───────▶│  │  (nginx /     │       │  - Shared Redis        │   │
-  (X-Tenant-ID:     │  │   Envoy /     │       │  - Vault secrets       │   │
-   team-beta)       │  │   ALB)        │       └───────────────────────┘   │
+  Team Alpha ──────▶│  ┌──────────────┐       ┌───────────────────────┐     │
+  (X-Tenant-ID:     │  │  Load        │       │  AgentArmor  (×N)     │     │
+   team-alpha)      │  │  Balancer /  │──────▶│  - Policy per tenant  │────▶│──▶ LLM APIs
+                    │  │  API Gateway │       │  - Shared PostgreSQL  │     │
+  Team Beta ───────▶│  │  (nginx /    │       │  - Shared Redis       │     │
+  (X-Tenant-ID:     │  │   Envoy /    │       │  - Vault secrets      │     │
+   team-beta)       │  │   ALB)       │       └───────────────────────┘     │
                     │  └──────────────┘                                     │
-                    │                         ┌──────────┐  ┌───────────┐  │
-                    │                         │PostgreSQL│  │  Redis    │  │
-                    │                         │ (RDS /   │  │(Elasticache│  │
-                    │                         │ Cloud SQL)│  │ / Memstore)│  │
-                    │                         └──────────┘  └───────────┘  │
+                    │                         ┌───────────┐  ┌────────────┐ │
+                    │                         │PostgreSQL │  │  Redis     │ │
+                    │                         │ (RDS /    │  │(Elasticache│ │
+                    │                         │ Cloud SQL)│  │ / Memstore)│ │
+                    │                         └───────────┘  └────────────┘ │
                     └───────────────────────────────────────────────────────┘
 ```
 
@@ -494,15 +493,15 @@ AgentArmor deployed as a sidecar container alongside each AI-enabled application
 
 ```
 ┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐
-│  Pod: chat-service                   │  │  Pod: code-assistant                  │
+│  Pod: chat-service                   │  │  Pod: code-assistant                 │
 │                                      │  │                                      │
 │  ┌────────────┐   ┌───────────────┐  │  │  ┌────────────┐   ┌───────────────┐  │
 │  │ App        │──▶│  AgentArmor   │──┼──┼─▶│ App        │──▶│  AgentArmor   │  │
 │  │ Container  │   │  (sidecar)    │  │  │  │ Container  │   │  (sidecar)    │  │
 │  └────────────┘   │  policy.yaml  │  │  │  └────────────┘   │  policy.yaml  │  │
 │                   │  skills/      │  │  │                   │  skills/      │  │
-│                   └──────┬────────┘  │  │                   └──────┬────────┘  │
-└──────────────────────────┼───────────┘  └──────────────────────────┼───────────┘
+│                   └──────┬────────┘  │  │                   └───────┬───────┘  │
+└──────────────────────────┼───────────┘  └───────────────────────────┼──────────┘
                            │                                          │
                     ┌──────▼──────────────────────────────────────────▼──────┐
                     │                  LLM API (cluster egress)               │
@@ -555,18 +554,18 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│   On-premises data centre (air-gapped)                                 │
+│   On-premises data centre (air-gapped)                                │
 │                                                                       │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐  │
-│  │  Internal    │────▶│  AgentArmor  │────▶│  On-prem LLM         │  │
-│  │  AI clients  │     │              │     │  (Ollama / vLLM /    │  │
-│  └──────────────┘     │  Scanners:   │     │   Azure OpenAI       │  │
-│                       │  - Regex     │     │   Private Endpoint)  │  │
-│  ┌──────────────┐     │  - Ollama    │     └──────────────────────┘  │
-│  │  Admin       │     │    LLM scan  │                               │
-│  │  Dashboard   │     │  - Presidio  │     ┌──────────────────────┐  │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐   │
+│  │  Internal    │────▶│  AgentArmor  │────▶│  On-prem LLM         │   │
+│  │  AI clients  │     │              │     │  (Ollama / vLLM /    │   │
+│  └──────────────┘     │  Scanners:   │     │   Azure OpenAI       │   │
+│                       │  - Regex     │     │   Private Endpoint)  │   │
+│  ┌──────────────┐     │  - Ollama    │     └──────────────────────┘   │
+│  │  Admin       │     │    LLM scan  │                                │
+│  │  Dashboard   │     │  - Presidio  │     ┌───────────────────────┐  │
 │  └──────────────┘     │    (local)   │     │  PostgreSQL (on-prem) │  │
-│                       └──────────────┘     └──────────────────────┘  │
+│                       └──────────────┘     └───────────────────────┘  │
 │                                                                       │
 │  ✗ No outbound internet — threat feeds disabled, ACME disabled        │
 └───────────────────────────────────────────────────────────────────────┘
@@ -631,18 +630,18 @@ All infrastructure settings are managed from the **Infrastructure tab (10)** in 
 **Save behaviour:** When you click **Save & Apply**, changes that can be applied immediately take effect without interruption. Settings that need a restart trigger a dialog:
 
 ```
-┌──────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────┐
 │  Restart required                                 │
 │                                                   │
-│  • Database (URL changed — needs a fresh start)  │
+│  • Database (URL changed — needs a fresh start)   │
 │                                                   │
 │  ✓ Already live: Redis rate limiting              │
 │                                                   │
-│  Active sessions will be interrupted briefly.    │
-│  Docker will restart automatically.              │
+│  Active sessions will be interrupted briefly.     │
+│  Docker will restart automatically.               │
 │                                                   │
-│            [ Later ]   [ Restart Now ]           │
-└──────────────────────────────────────────────────┘
+│            [ Later ]   [ Restart Now ]            │
+└───────────────────────────────────────────────────┘
 ```
 
 The **Restart System** button in the tab header lets admins trigger a clean restart at any time. A full-screen spinner tracks the restart and auto-reloads the dashboard when the service is back up.
