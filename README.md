@@ -28,7 +28,8 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
                         │ │Ollama│ │Presidio │ └───────────┬───────────┘   │
                         │ │(LLM) │ │(PII/DLP)│             ▼               │
                         │ └──────┘ └─────────┘ ┌───────────────────────┐   │
-                        │                      │   Audit DB (SQLite)   │   │                     │                      └───────────────────────┘   │
+                        │                      │   Audit DB (SQLite)   │   │                               
+                        │                      └───────────────────────┘   │             
                         └──────────────────────────────────────────────────┘
 ```
 
