@@ -248,6 +248,17 @@ func buildScannerStatus() map[string]interface{} {
 		})
 	}
 
+	// ── MCP Servers (zero-trust credential brokering) ────────────────────────
+	policyLock.RLock()
+	mcpCfg := policy.MCPServers
+	policyLock.RUnlock()
+	{
+		status, detail := probeMCPServers(mcpCfg)
+		entries = append(entries, scannerEntry{
+			Name: "MCP Servers", Type: "network", Status: status, Detail: detail,
+		})
+	}
+
 	// ── WASM filters ─────────────────────────────────────────────────────────
 	if wasmEnabled {
 		filters := ListWASMFilters()

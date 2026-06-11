@@ -51,6 +51,7 @@ AgentArmor is built around three principles:
 | LLM Scanner | In | Block | Subtle injections that evade regex — Ollama `llama3.2:3b`, confidence-gated (0.85); warm-up on startup prevents cold-start circuit trips |
 | ATR Rules | Both | Block / Alert | 459 community-maintained detection rules from [ATR — Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) baked in across 10 threat categories; enable/disable and configure severity threshold from the dashboard |
 | Document Conversion | In | Convert + Scan | PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding — closes the binary-upload DLP/injection bypass and cuts LLM token usage |
+| MCP Credential Brokering | Out | Inject + Block | Registers MCP servers and the tool names they own; resolves `{"tool":...,"args":...}` calls against the registry and injects an AgentArmor-managed credential — agents never hold the real API key; zero-trust scope gate (`mcp:any` / `mcp:<server-id>`) blocks unauthorized tool calls before forwarding |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -279,6 +280,26 @@ doc_conversion:
   enabled: true
   max_file_size_mb: 20             # uploads larger than this pass through unconverted
   timeout_seconds: 30              # per-file conversion timeout
+
+# MCP Server Registry & Credential Brokering (Zero-Trust MCP)
+# Register MCP servers and the tool names they own. When an agent's tool call
+# ({"tool":"...","args":{...}}) targets a registered tool, AgentArmor injects
+# a resolved credential into args before forwarding — agents never hold the
+# real MCP server credentials. Credential VALUES live only in env vars
+# (populate via your secrets vault), never in policy.yaml.
+mcp_servers:
+  enabled: false
+  require_scope: true              # require mcp:any / mcp:<id> scope to call registered tools
+  servers:
+    - id: github-mcp
+      name: GitHub MCP Server
+      url: "https://api.githubcopilot.com/mcp/"
+      tools: [github_search, github_create_issue, github_list_prs]
+      auth:
+        type: bearer                # bearer | basic | header
+        header_name: Authorization  # default: Authorization
+        token_env: GITHUB_MCP_TOKEN # env var holding the token
+        value_prefix: "Bearer "     # default for type: bearer
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -330,6 +351,7 @@ agentarmor-oss/
 │   ├── main.go          # Core proxy, scanners, WS handler, API endpoints, repave features
 │   ├── scannercheck.go  # Scanner status probes, startup gate, badge API
 │   ├── docconv.go       # Document conversion — PDF/Word/Excel/PowerPoint uploads → Markdown via doc2md, scanned before forwarding
+│   ├── mcpbroker.go     # MCP server registry — credential brokering for {"tool":...,"args":...} calls, zero-trust scope gate
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
 │   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
 │   ├── tokens.go        # Agent token issuance, ABAC scopes, spawn-chain
@@ -697,6 +719,7 @@ AgentArmor's default policy applies uniformly to every request. When you have ag
 | `tool:exec` | Zero-trust approval queue bypassed for the `exec` tool |
 | `tool:browser` | Zero-trust approval queue bypassed for `browser` |
 | `tool:any` | All zero-trust tool approvals bypassed |
+| `mcp:any` | Receive AgentArmor-brokered credentials for any registered MCP server (`mcp:<server-id>` scopes individual servers) |
 | `rate_limit:exempt` | Rate limiting bypassed — for high-throughput orchestrators |
 | `anomaly:exempt` | Anomaly scoring bypassed — for predictable multi-step pipelines |
 | `blast_radius:exempt` | Blast-radius cap bypassed — for orchestrators that do many tool calls |
@@ -751,6 +774,28 @@ agent_routing:
       max_spawn_depth: 1
 ```
 
+### MCP credential brokering (`policy.yaml`)
+
+Register MCP servers and the tools they own. AgentArmor resolves `{"tool":"...","args":{...}}` calls against this registry and injects a credential header into `args` — agents never hold the real MCP server credentials, and (with `require_scope: true`) sessions need `mcp:any` or the per-server `mcp:<id>` scope to call a registered tool at all:
+
+```yaml
+mcp_servers:
+  enabled: true
+  require_scope: true
+  servers:
+    - id: github-mcp
+      name: GitHub MCP Server
+      url: "https://api.githubcopilot.com/mcp/"
+      tools: [github_search, github_create_issue, github_list_prs]
+      auth:
+        type: bearer                # bearer | basic | header
+        header_name: Authorization  # default: Authorization
+        token_env: GITHUB_MCP_TOKEN # env var holding the token — never the value itself
+        value_prefix: "Bearer "     # default for type: bearer
+```
+
+Credential values come from environment variables, populated via AgentArmor's secrets vault integration (HashiCorp Vault, AWS/GCP/Azure secret managers), so they never appear in policy.yaml or in the dashboard. AgentArmor stays a single-target reverse proxy — this registry only maps tool names to credential metadata, it doesn't change routing.
+
 ### What this maps to (from the article on AgentQ)
 
 | AgentQ pattern | AgentArmor equivalent |
@@ -787,6 +832,7 @@ agent_routing:
 - [x] **Context-aware ABAC / agent tokens** — scoped JWTs gate every scanner; ephemeral child tokens for dynamic multi-agent systems; `POST /armor/api/tokens/spawn` for parent→child issuance with scope subsetting; cascading revocation; `agent_routing` policy for approved call patterns
 - [x] **ATR rules (459 rules)** — full [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) corpus baked in; native Go engine evaluates all six detection operators with AND/OR/NOT logic; field-to-direction mapping (user_input → inbound, agent_output → outbound); enable/disable and severity filtering from the dashboard
 - [x] **Document conversion (doc2md)** — PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding; closes the binary-upload DLP/injection bypass (documents previously skipped every text-based scanner) and cuts LLM token usage; configurable size/timeout limits, enable/disable from the dashboard
+- [x] **MCP Server Registry & Credential Brokering (Zero-Trust MCP, v1)** — register MCP servers and the tools they own; AgentArmor resolves `{"tool":...,"args":...}` calls against the registry and injects a brokered credential (bearer/basic/header) into `args` so agents never hold real MCP server credentials; optional `mcp:any` / `mcp:<server-id>` scope gate blocks unauthorized tool calls before they're forwarded; live reachability badge on the dashboard
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

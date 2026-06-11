@@ -180,9 +180,9 @@ scanners:
               enabled: true
             - rule: ignore all previous context
               enabled: true
-            - rule: new directive:
+            - rule: "new directive:"
               enabled: true
-            - rule: new instruction:
+            - rule: "new instruction:"
               enabled: true
             - rule: end of system prompt
               enabled: true
@@ -533,3 +533,39 @@ doc_conversion:
     enabled: true
     max_file_size_mb: 20
     timeout_seconds: 30
+
+# ── MCP Server Registry & Credential Brokering (Zero-Trust MCP) ──────────────
+# Register MCP servers and the tool names they own. When an agent's tool call
+# ({"tool":"...","args":{...}}) targets a registered tool, AgentArmor injects
+# a resolved credential header into args before forwarding — agents never
+# need to hold, store, or leak the actual MCP server credentials.
+#
+# Credential VALUES are never stored here — only the names of environment
+# variables that hold them (populate via your secrets vault / SECRETS_PROVIDER).
+mcp_servers:
+    enabled: false
+    # When true, a session must hold the mcp:any scope (or the per-server
+    # mcp:<id> scope) to call a tool registered below — sessions without it
+    # are blocked before the call is forwarded.
+    require_scope: true
+    servers: []
+    # Example:
+    # servers:
+    #   - id: github-mcp
+    #     name: GitHub MCP Server
+    #     description: Issue/PR/repo tools brokered through AgentArmor
+    #     url: https://api.githubcopilot.com/mcp/
+    #     tools: [github_search, github_create_issue, github_list_prs]
+    #     auth:
+    #       type: bearer                  # bearer | basic | header
+    #       header_name: Authorization    # default: Authorization
+    #       token_env: GITHUB_MCP_TOKEN   # env var holding the token
+    #       value_prefix: "Bearer "       # default for type: bearer
+    #   - id: internal-db
+    #     name: Internal Database MCP
+    #     url: http://db-mcp.internal:9000/
+    #     tools: [db_query, db_schema]
+    #     auth:
+    #       type: basic
+    #       username_env: DB_MCP_USER
+    #       password_env: DB_MCP_PASS

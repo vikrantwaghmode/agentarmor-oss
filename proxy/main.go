@@ -203,6 +203,7 @@ type Config struct {
 	AgentRouting  AgentRoutingConfig  `yaml:"agent_routing" json:"agent_routing"`
 	ATRRules      ATRConfig           `yaml:"atr_rules" json:"atr_rules"`
 	DocConversion DocConversionConfig `yaml:"doc_conversion" json:"doc_conversion"`
+	MCPServers    MCPServersConfig    `yaml:"mcp_servers" json:"mcp_servers"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -2094,8 +2095,9 @@ func buildWSBlockMessage(action, ruleLabel string) string {
 type ScanResult struct {
 	Blocked     bool
 	Redacted    bool
+	MCPInjected bool // true when an MCP credential was injected into a tool-call payload
 	RuleMatched string
-	Payload     string // possibly modified (redacted) payload
+	Payload     string // possibly modified (redacted / credential-injected) payload
 }
 
 // scanPayload checks a text payload against all policy rules.
@@ -2387,6 +2389,13 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	isUIFrame := false
 	var requestFrame map[string]interface{}
 
+	// soleMessageRef points at the single non-system message contributing
+	// plain string content to contentToScan — the only safe rewrite target
+	// for MCP credential injection (see below). It's nil whenever more than
+	// one message contributed, or the content came from array-form blocks.
+	var soleMessageRef map[string]interface{}
+	stringMsgCount := 0
+
 	if direction == "Request" {
 		if err := json.Unmarshal([]byte(payload), &requestFrame); err == nil {
 			if messages, ok := requestFrame["messages"].([]interface{}); ok && len(messages) > 0 {
@@ -2402,6 +2411,8 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 						}
 						if content, ok := msg["content"].(string); ok && content != "" {
 							parts = append(parts, content)
+							stringMsgCount++
+							soleMessageRef = msg
 						} else if blocks, ok := msg["content"].([]interface{}); ok {
 							// Array-form content (vision/file uploads, doc2md
 							// conversions): scan every "text" block — this is
@@ -2413,6 +2424,7 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 									}
 								}
 							}
+							stringMsgCount += 2 // disqualifies soleMessageRef below
 						}
 					}
 				}
@@ -2423,10 +2435,44 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 			}
 		}
 	}
+	if stringMsgCount != 1 {
+		soleMessageRef = nil
+	}
 	contentToScanLower := strings.ToLower(contentToScan)
+
+	// Parse the tool-call envelope ({"tool":"...","args":{...}}) once, up
+	// front, for MCP credential brokering below. mcpServer is resolved under
+	// policyLock and used both for the early zero-trust gate and the late
+	// credential-injection step.
+	var mcpToolCall mcpToolCallEnvelope
+	var mcpServer *MCPServer
+	mcpToolCallParsed := false
+	if direction == "Request" && soleMessageRef != nil {
+		if err := json.Unmarshal([]byte(contentToScan), &mcpToolCall); err == nil && mcpToolCall.Tool != "" {
+			mcpToolCallParsed = true
+		}
+	}
 
 	policyLock.RLock()
 	defer policyLock.RUnlock()
+
+	// --- MCP Zero-Trust Gate (Request only) ---
+	// If this tool call targets a tool registered to an MCP server and
+	// require_scope is on, the session must hold mcp:any or mcp:<server-id>
+	// to proceed. Credential injection itself happens later (after the
+	// secrets redactor) so the brokered credential isn't redacted as if it
+	// were an agent-supplied secret.
+	if mcpToolCallParsed && policy.MCPServers.Enabled {
+		if srv := findMCPServerForTool(policy.MCPServers, mcpToolCall.Tool); srv != nil {
+			mcpServer = srv
+			if policy.MCPServers.RequireScope && !sessionHasMCPAccess(tnt, sessionKey, srv.ID) {
+				result.Blocked = true
+				result.RuleMatched = fmt.Sprintf("MCP: tool '%s' requires scope mcp:%s or mcp:any (server=%s)", mcpToolCall.Tool, srv.ID, srv.ID)
+				logAuditEvent("", sessionKey, "Request", "BLOCKED", result.RuleMatched, mcpToolCall.Tool)
+				return result
+			}
+		}
+	}
 
 	// --- Intent-Based Risk Scoring (stateful, Request only) ---
 	if direction == "Request" && policy.Scanners.RiskScoring.Enabled && sessionKey != "" {
@@ -2784,6 +2830,23 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		if blocked, rule := runWASMFilters(contentToScan, direction, sessionKey, tnt.Meta.ID); blocked {
 			result.Blocked = true
 			result.RuleMatched = rule
+		}
+	}
+
+	// --- MCP Credential Injection (Request only) ---
+	// Runs last, after the secrets redactor, so the credential AgentArmor
+	// brokers in here can't be matched and stripped out by the redact_patterns
+	// rules above. requestFrame may already have been mutated in place by the
+	// redaction step; marshalling it again here preserves those edits and
+	// layers the credential injection on top.
+	if mcpServer != nil && !result.Blocked && soleMessageRef != nil {
+		if rewritten, ok := buildMCPInjectedToolCall(mcpToolCall.Tool, mcpToolCall.Args, mcpServer); ok {
+			soleMessageRef["content"] = rewritten
+			if modified, err := json.Marshal(requestFrame); err == nil {
+				result.Payload = string(modified)
+				result.MCPInjected = true
+				result.RuleMatched = "MCP Credential Injected: server=" + mcpServer.ID
+			}
 		}
 	}
 
@@ -3528,9 +3591,10 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		// Validate scopes
 		validScopes := map[string]bool{ScopePIIRead: true, ScopePIIProcess: true,
-			ScopeSecretsRead: true, ScopeToolExec: true, ScopeToolBrowser: true, ScopeToolAny: true}
+			ScopeSecretsRead: true, ScopeToolExec: true, ScopeToolBrowser: true, ScopeToolAny: true,
+			ScopeMCPAny: true}
 		for _, s := range req.Scopes {
-			if !validScopes[s] {
+			if !validScopes[s] && !strings.HasPrefix(s, "mcp:") {
 				http.Error(w, `{"error":"unknown scope: `+s+`"}`, http.StatusBadRequest)
 				return
 			}
@@ -4102,7 +4166,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, targetURL *url.URL)
 					continue                                                 // keep the WebSocket alive
 				}
 
-				if result.Redacted {
+				if result.MCPInjected {
+					logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "MCP_CREDENTIAL_INJECTED", result.RuleMatched, payload)
+					msg = []byte(result.Payload)
+				} else if result.Redacted {
 					logAuditEvent(r.RemoteAddr, sessionKey, "WS-Request", "REDACTED", result.RuleMatched, payload)
 					// The payload was modified by the scanner, so we update the message to be sent.
 					msg = []byte(result.Payload)
@@ -4238,7 +4305,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseP
 			return
 		}
 
-		if result.Redacted {
+		if result.MCPInjected {
+			logAuditEvent(r.RemoteAddr, sessionKey, "Request", "MCP_CREDENTIAL_INJECTED", result.RuleMatched, payload)
+			payload = result.Payload
+		} else if result.Redacted {
 			logAuditEvent(r.RemoteAddr, sessionKey, "Request", "REDACTED", result.RuleMatched, payload)
 			payload = result.Payload
 		} else {

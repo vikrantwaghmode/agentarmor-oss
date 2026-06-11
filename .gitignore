@@ -13,3 +13,6 @@ workspace/
 # IDE/Editor specific files
 .vscode/
 .idea/
+
+# Internal planning docs — not for the public repo
+AgentArmor Enterprise Readiness Plan.md

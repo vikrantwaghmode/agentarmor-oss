@@ -14,6 +14,8 @@ package main
 //   tool:exec      — bypass zero-trust approval for the 'exec' tool
 //   tool:browser   — bypass zero-trust approval for the 'browser' tool
 //   tool:any       — bypass zero-trust approval for ALL high-risk tools
+//   mcp:any        — receive AgentArmor-brokered credentials for any registered MCP server
+//   mcp:<id>       — receive brokered credentials for one mcp_servers.servers[].id
 //
 // Scanners that are NEVER bypassable regardless of scope:
 //   - Prompt injection (no agent should receive jailbreaks)
@@ -49,20 +51,26 @@ import (
 
 const (
 	// Content / data scopes
-	ScopePIIRead     = "pii:read"      // receive PII in responses
-	ScopePIIProcess  = "pii:process"   // send and receive PII
-	ScopeSecretsRead = "secrets:read"  // secret values not redacted
+	ScopePIIRead     = "pii:read"     // receive PII in responses
+	ScopePIIProcess  = "pii:process"  // send and receive PII
+	ScopeSecretsRead = "secrets:read" // secret values not redacted
 
 	// Tool / action scopes
-	ScopeToolExec    = "tool:exec"     // bypass ZT approval for exec
-	ScopeToolBrowser = "tool:browser"  // bypass ZT approval for browser
-	ScopeToolAny     = "tool:any"      // bypass all ZT tool approvals
+	ScopeToolExec    = "tool:exec"    // bypass ZT approval for exec
+	ScopeToolBrowser = "tool:browser" // bypass ZT approval for browser
+	ScopeToolAny     = "tool:any"     // bypass all ZT tool approvals
 
 	// Orchestration scopes — for dynamic multi-agent systems
-	ScopeRateLimitExempt  = "rate_limit:exempt"   // bypass rate-limiting (trusted orchestrators)
-	ScopeAnomalyExempt    = "anomaly:exempt"       // bypass anomaly scoring (predictable pipelines)
+	ScopeRateLimitExempt   = "rate_limit:exempt"   // bypass rate-limiting (trusted orchestrators)
+	ScopeAnomalyExempt     = "anomaly:exempt"      // bypass anomaly scoring (predictable pipelines)
 	ScopeBlastRadiusExempt = "blast_radius:exempt" // bypass blast-radius cap (orchestrators do more)
-	ScopeAgentSpawn       = "agent:spawn"          // can issue child tokens for downstream agents
+	ScopeAgentSpawn        = "agent:spawn"         // can issue child tokens for downstream agents
+
+	// MCP brokering scopes
+	ScopeMCPAny = "mcp:any" // receive AgentArmor-brokered credentials for ANY registered MCP server
+	// Per-server scopes ("mcp:<server-id>") are also accepted by
+	// sessionHasMCPAccess but aren't part of this fixed list — issue them via
+	// the tokens API with a custom scope string matching an mcp_servers.servers[].id.
 )
 
 // AllDefinedScopes is the ordered list shown in the dashboard scope selector.
@@ -84,6 +92,7 @@ var AllDefinedScopes = []struct {
 	{ScopeAnomalyExempt, "orchestration", "Bypass anomaly scoring — for predictable multi-step pipelines", true},
 	{ScopeBlastRadiusExempt, "orchestration", "Bypass blast-radius cap — for orchestrators that legitimately make many tool calls", true},
 	{ScopeAgentSpawn, "orchestration", "Issue child tokens for downstream agents (scopes are always a subset of this token's scopes)", false},
+	{ScopeMCPAny, "mcp", "Receive AgentArmor-brokered credentials for any registered MCP server (zero-trust MCP brokering)", true},
 }
 
 // ─── JWT secret ──────────────────────────────────────────────────────────────
@@ -133,12 +142,12 @@ func issueAgentJWTFull(agentID string, scopes []string, expiresIn time.Duration,
 	now := time.Now().Unix()
 
 	claims := map[string]interface{}{
-		"iss":                  "agentarmor",
-		"sub":                  agentID,
-		"jti":                  jtiHex,
-		"agentarmor:scopes":    scopes,
-		"agentarmor:depth":     depth,
-		"iat":                  now,
+		"iss":               "agentarmor",
+		"sub":               agentID,
+		"jti":               jtiHex,
+		"agentarmor:scopes": scopes,
+		"agentarmor:depth":  depth,
+		"iat":               now,
 	}
 	if parentJTI != "" {
 		claims["agentarmor:parent_jti"] = parentJTI
@@ -187,13 +196,13 @@ func validateAgentJWT(raw string) (*agentClaims, error) {
 	}
 
 	var p struct {
-		Issuer     string   `json:"iss"`
-		Subject    string   `json:"sub"`
-		JTI        string   `json:"jti"`
-		Scopes     []string `json:"agentarmor:scopes"`
-		ParentJTI  string   `json:"agentarmor:parent_jti"`
-		Depth      int      `json:"agentarmor:depth"`
-		Exp        int64    `json:"exp"`
+		Issuer    string   `json:"iss"`
+		Subject   string   `json:"sub"`
+		JTI       string   `json:"jti"`
+		Scopes    []string `json:"agentarmor:scopes"`
+		ParentJTI string   `json:"agentarmor:parent_jti"`
+		Depth     int      `json:"agentarmor:depth"`
+		Exp       int64    `json:"exp"`
 	}
 	if err := json.Unmarshal(payBytes, &p); err != nil {
 		return nil, fmt.Errorf("parse payload: %w", err)

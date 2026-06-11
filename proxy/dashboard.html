@@ -1396,6 +1396,41 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         </CfgRow>
       </Block>
 
+      {/* MCP Server Registry & Credential Brokering */}
+      <Block id="mcp_servers" name="MCP Servers (Zero-Trust Brokering)" slug="/mcp_servers">
+        <CfgRow label="Enabled" sub="Inject brokered credentials into tool calls routed to registered MCP servers — agents never hold the real API keys">
+          <Toggle path={['mcp_servers','enabled']} checked={!!pol?.mcp_servers?.enabled} top/>
+        </CfgRow>
+        <CfgRow label="Registry status" sub="Reachability of registered MCP server endpoints">
+          <ScannerStatusBadge name="MCP Servers"/>
+        </CfgRow>
+        <CfgRow label="Require scope" sub="Sessions must hold mcp:any (or the per-server mcp:<id> scope) to call a tool registered below — otherwise the call is blocked before forwarding">
+          <Toggle path={['mcp_servers','require_scope']} checked={!!pol?.mcp_servers?.require_scope} top/>
+        </CfgRow>
+        <div>
+          <div className="cfg-label" style={{marginBottom:4}}>Registered servers</div>
+          <div className="cfg-sub" style={{marginBottom:8}}>Edit mcp_servers.servers in policy.yaml to add/remove servers — each maps a list of tool names to a credential (env var name only, never the secret value)</div>
+          {!(pol?.mcp_servers?.servers||[]).length
+            ?<div className="empty" style={{padding:'12px 0'}}>No MCP servers registered.</div>
+            :pol.mcp_servers.servers.map(s=>(
+              <div key={s.id} style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',padding:'10px 12px',marginBottom:8,background:'var(--s1)'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                  <span style={{fontSize:12,fontWeight:700,color:'var(--t2)'}}>{s.name||s.id}</span>
+                  <span style={{fontSize:10,fontFamily:'var(--mono)',color:'var(--t3)'}}>{s.auth?.type||'none'}</span>
+                </div>
+                {s.description&&<div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>{s.description}</div>}
+                <div className="tag-list">
+                  {(s.tools||[]).map(t=><span key={t} className="tag">{t}</span>)}
+                </div>
+                <div style={{fontSize:10,color:'var(--t3)',marginTop:6}}>
+                  id: <code style={{color:'var(--t2)'}}>{s.id}</code>
+                  {s.url&&<> · url: <code style={{color:'var(--t2)'}}>{s.url}</code></>}
+                </div>
+              </div>
+            ))}
+        </div>
+      </Block>
+
       {/* Skills RAG & Routing */}
       <Block id="skills_rag" name="Skills RAG & Routing" slug="/skills_rag">
         <CfgRow label="Semantic RAG Enabled" sub="When disabled, proxy instantly falls back to BM25 keyword retrieval.">
