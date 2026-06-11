@@ -1632,6 +1632,18 @@ func loadPolicy() {
 	globalRuleCounts = currentRuleCounts // Store the calculated counts
 	policyLock.Unlock()
 
+	// MCP config-hardening audit (Phase 1.3) — recomputed on every policy load
+	// since the server registry and credential env vars may have changed.
+	// "critical" findings quarantine a server: scanPayload's MCP gate blocks
+	// tool calls routed to it until the policy is corrected.
+	mcpFindings, mcpQuarantine := auditMCPServers(newPolicy.MCPServers)
+	setMCPAudit(mcpFindings, mcpQuarantine)
+	for _, f := range mcpFindings {
+		if f.Severity == "critical" {
+			log.Printf("🔴 MCP server %q quarantined by config-hardening scan: %s", f.ServerID, f.Issue)
+		}
+	}
+
 	// If Semantic RAG was just enabled, automatically trigger document embedding
 	if newPolicy.SkillsRAG.Enabled && newPolicy.SkillsRAG.URL != "" && newPolicy.SkillsRAG.Model != "" {
 		TriggerEmbeddingsIfNeeded(newPolicy.SkillsRAG.URL, newPolicy.SkillsRAG.Model)
@@ -2457,13 +2469,23 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	defer policyLock.RUnlock()
 
 	// --- MCP Zero-Trust Gate (Request only) ---
-	// If this tool call targets a tool registered to an MCP server and
-	// require_scope is on, the session must hold mcp:any or mcp:<server-id>
-	// to proceed. Credential injection itself happens later (after the
-	// secrets redactor) so the brokered credential isn't redacted as if it
-	// were an agent-supplied secret.
+	// If this tool call targets a tool registered to an MCP server:
+	//  1. A server quarantined by the config-hardening audit (Phase 1.3 —
+	//     e.g. binds to 0.0.0.0, path traversal in its url) is hard-blocked
+	//     regardless of scope, until the policy is corrected and reloaded.
+	//  2. Otherwise, if require_scope is on, the session must hold mcp:any
+	//     or mcp:<server-id> to proceed.
+	// Credential injection itself happens later (after the secrets redactor)
+	// so the brokered credential isn't redacted as if it were an
+	// agent-supplied secret.
 	if mcpToolCallParsed && policy.MCPServers.Enabled {
 		if srv := findMCPServerForTool(policy.MCPServers, mcpToolCall.Tool); srv != nil {
+			if reason, quarantined := mcpServerQuarantined(srv.ID); quarantined {
+				result.Blocked = true
+				result.RuleMatched = fmt.Sprintf("MCP: server '%s' quarantined by config-hardening scan (%s) — tool '%s' blocked until policy is fixed", srv.ID, reason, mcpToolCall.Tool)
+				logAuditEvent("", sessionKey, "Request", "BLOCKED", result.RuleMatched, mcpToolCall.Tool)
+				return result
+			}
 			mcpServer = srv
 			if policy.MCPServers.RequireScope && !sessionHasMCPAccess(tnt, sessionKey, srv.ID) {
 				result.Blocked = true
@@ -2989,6 +3011,20 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			p.Scanners.CanaryTokens.Tokens = []Rule{}
 		}
 		json.NewEncoder(w).Encode(p)
+
+	// GET /armor/api/mcp/audit — config-hardening findings + quarantined servers
+	case endpoint == "mcp/audit" && r.Method == http.MethodGet:
+		findings, quarantined := getMCPAudit()
+		if findings == nil {
+			findings = []MCPServerFinding{}
+		}
+		if quarantined == nil {
+			quarantined = map[string]string{}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"findings":    findings,
+			"quarantined": quarantined,
+		})
 
 	// POST /armor/api/policy
 	case endpoint == "policy" && r.Method == http.MethodPost:

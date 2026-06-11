@@ -23,9 +23,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -135,13 +139,23 @@ func resolveMCPCredential(auth MCPAuth) (headerName, headerValue string, ok bool
 // probeMCPServers reports the registry's overall health for the dashboard /
 // scanner-status badge. A single unreachable server only ever degrades this
 // scanner — it never returns "down", so it can't trip scannerGateReady() and
-// block all chat traffic.
-func probeMCPServers(cfg MCPServersConfig) (status, detail string) {
+// block all chat traffic. Servers quarantined by the config-hardening audit
+// (see auditMCPServers) also degrade this scanner rather than blocking it.
+func probeMCPServers(cfg MCPServersConfig, quarantined map[string]string) (status, detail string) {
 	if !cfg.Enabled {
 		return "disabled", "enable mcp_servers in policy to broker credentials for registered tool calls"
 	}
 	if len(cfg.Servers) == 0 {
 		return "disabled", "no servers registered — add entries under mcp_servers.servers"
+	}
+
+	if len(quarantined) > 0 {
+		ids := make([]string, 0, len(quarantined))
+		for id := range quarantined {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return "degraded", fmt.Sprintf("%d server(s) quarantined by config-hardening scan: %s", len(quarantined), strings.Join(ids, ", "))
 	}
 
 	client := &http.Client{Timeout: 800 * time.Millisecond}
@@ -210,4 +224,143 @@ func buildMCPInjectedToolCall(tool string, args json.RawMessage, server *MCPServ
 		return "", false
 	}
 	return string(rewritten), true
+}
+
+// ─── configuration hardening audit ─────────────────────────────────────────────
+//
+// Phase 1.3 of zero-trust MCP brokering: registered servers are checked for
+// known-insecure configuration patterns (NeighborJack-style binds to all
+// interfaces, path traversal in the server URL, plaintext credentials over
+// http to a non-private host, and brokering setups that can never actually
+// inject a credential). "critical" findings quarantine the server — scanPayload
+// blocks tool calls routed to it until the policy is corrected and reloaded.
+
+// MCPServerFinding describes one configuration-hardening issue found on a
+// registered MCP server.
+type MCPServerFinding struct {
+	ServerID string `json:"server_id"`
+	Severity string `json:"severity"` // critical | high | medium | low
+	Issue    string `json:"issue"`
+}
+
+// auditMCPServerConfig inspects a single registered MCP server and returns
+// every configuration-hardening finding for it.
+func auditMCPServerConfig(s MCPServer) []MCPServerFinding {
+	var findings []MCPServerFinding
+	add := func(severity, format string, args ...interface{}) {
+		findings = append(findings, MCPServerFinding{ServerID: s.ID, Severity: severity, Issue: fmt.Sprintf(format, args...)})
+	}
+
+	if s.ID == "" {
+		add("high", "missing 'id' — cannot be targeted by mcp:<id> scopes or quarantined individually")
+	}
+	if len(s.Tools) == 0 {
+		add("low", "no tools registered — this entry has no effect")
+	}
+
+	if s.URL == "" {
+		add("low", "no url configured — reachability cannot be probed")
+	} else if u, err := url.Parse(s.URL); err != nil {
+		add("medium", "url %q could not be parsed: %v", s.URL, err)
+	} else {
+		host := u.Hostname()
+		if host == "0.0.0.0" || host == "::" {
+			add("critical", "url binds to all interfaces (%s) — exposes the MCP server to the entire local network (NeighborJack-style)", host)
+		}
+		if u.Scheme == "http" && !isLoopbackOrPrivateHost(host) {
+			add("high", "url uses plaintext http:// to a non-private host (%s) — brokered credentials would be sent unencrypted", host)
+		}
+		if strings.Contains(u.Path, "..") {
+			add("critical", "url path %q contains '..' — possible path traversal", u.Path)
+		}
+	}
+
+	switch strings.ToLower(s.Auth.Type) {
+	case "bearer":
+		if s.Auth.TokenEnv == "" {
+			add("medium", "auth.type=bearer but token_env is not set — credential injection will always be skipped")
+		}
+	case "basic":
+		if s.Auth.UsernameEnv == "" && s.Auth.PasswordEnv == "" {
+			add("medium", "auth.type=basic but username_env/password_env are not set — credential injection will always be skipped")
+		}
+	case "header":
+		if s.Auth.HeaderName == "" || s.Auth.ValueEnv == "" {
+			add("medium", "auth.type=header requires header_name and value_env — credential injection will always be skipped")
+		}
+	case "":
+		add("medium", "no auth configured — tool calls to this server's tools are forwarded without a brokered credential")
+	default:
+		add("medium", "unknown auth.type %q — must be bearer, basic, or header", s.Auth.Type)
+	}
+
+	return findings
+}
+
+// isLoopbackOrPrivateHost reports whether host is localhost or an RFC 1918 /
+// loopback / link-local address — i.e. traffic that never leaves the local
+// network even over plain http.
+func isLoopbackOrPrivateHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // external hostname — treat as non-private
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// auditMCPServers runs auditMCPServerConfig over every registered server and
+// returns the full finding list plus the set of server IDs quarantined by a
+// "critical" finding (server ID -> first critical issue).
+func auditMCPServers(cfg MCPServersConfig) (findings []MCPServerFinding, quarantined map[string]string) {
+	quarantined = make(map[string]string)
+	for _, s := range cfg.Servers {
+		for _, f := range auditMCPServerConfig(s) {
+			findings = append(findings, f)
+			if f.Severity == "critical" {
+				if _, exists := quarantined[f.ServerID]; !exists {
+					quarantined[f.ServerID] = f.Issue
+				}
+			}
+		}
+	}
+	return findings, quarantined
+}
+
+// ─── audit cache ────────────────────────────────────────────────────────────────
+//
+// Recomputed by loadPolicy() on every (re)load, so scanPayload's quarantine
+// check and the dashboard's audit panel never need to re-run the audit
+// themselves.
+
+var (
+	mcpAuditMu       sync.RWMutex
+	mcpAuditFindings = []MCPServerFinding{}
+	mcpQuarantined   = map[string]string{}
+)
+
+// setMCPAudit stores the latest config-hardening audit results.
+func setMCPAudit(findings []MCPServerFinding, quarantined map[string]string) {
+	mcpAuditMu.Lock()
+	mcpAuditFindings = findings
+	mcpQuarantined = quarantined
+	mcpAuditMu.Unlock()
+}
+
+// getMCPAudit returns the latest config-hardening findings and quarantine map.
+func getMCPAudit() ([]MCPServerFinding, map[string]string) {
+	mcpAuditMu.RLock()
+	defer mcpAuditMu.RUnlock()
+	return mcpAuditFindings, mcpQuarantined
+}
+
+// mcpServerQuarantined reports whether serverID is currently quarantined by
+// the config-hardening audit, and why.
+func mcpServerQuarantined(serverID string) (reason string, ok bool) {
+	mcpAuditMu.RLock()
+	defer mcpAuditMu.RUnlock()
+	reason, ok = mcpQuarantined[serverID]
+	return
 }

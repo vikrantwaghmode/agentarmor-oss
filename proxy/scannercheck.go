@@ -253,7 +253,8 @@ func buildScannerStatus() map[string]interface{} {
 	mcpCfg := policy.MCPServers
 	policyLock.RUnlock()
 	{
-		status, detail := probeMCPServers(mcpCfg)
+		_, mcpQuarantine := getMCPAudit()
+		status, detail := probeMCPServers(mcpCfg, mcpQuarantine)
 		entries = append(entries, scannerEntry{
 			Name: "MCP Servers", Type: "network", Status: status, Detail: detail,
 		})

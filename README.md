@@ -52,6 +52,7 @@ AgentArmor is built around three principles:
 | ATR Rules | Both | Block / Alert | 459 community-maintained detection rules from [ATR — Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) baked in across 10 threat categories; enable/disable and configure severity threshold from the dashboard |
 | Document Conversion | In | Convert + Scan | PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding — closes the binary-upload DLP/injection bypass and cuts LLM token usage |
 | MCP Credential Brokering | Out | Inject + Block | Registers MCP servers and the tool names they own; resolves `{"tool":...,"args":...}` calls against the registry and injects an AgentArmor-managed credential — agents never hold the real API key; zero-trust scope gate (`mcp:any` / `mcp:<server-id>`) blocks unauthorized tool calls before forwarding |
+| MCP Config-Hardening Scanner | Out | Quarantine | Audits every registered `mcp_servers.servers[]` entry on each policy load for insecure configs — binds to `0.0.0.0`/`::` (NeighborJack-style exposure) or `..` path traversal in the URL are **critical** and auto-quarantine the server, hard-blocking any tool call routed to it regardless of scope; plaintext `http://` to a public host, missing IDs, and broken credential-brokering setups are surfaced as high/medium findings without blocking traffic; full results via `GET /armor/api/mcp/audit` and the MCP Servers dashboard panel |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -796,6 +797,19 @@ mcp_servers:
 
 Credential values come from environment variables, populated via AgentArmor's secrets vault integration (HashiCorp Vault, AWS/GCP/Azure secret managers), so they never appear in policy.yaml or in the dashboard. AgentArmor stays a single-target reverse proxy — this registry only maps tool names to credential metadata, it doesn't change routing.
 
+### MCP configuration-hardening audit & quarantine
+
+Every time the policy is loaded (startup or hot-reload), AgentArmor audits each entry in `mcp_servers.servers[]` for known-insecure configurations and classifies findings by severity:
+
+| Severity | Examples | Effect |
+|----------|----------|--------|
+| **critical** | URL host is `0.0.0.0`/`::` (NeighborJack-style — exposes the server to the entire local network); `..` in the URL path (path traversal) | Server is **quarantined** — `scanPayload`'s MCP zero-trust gate hard-blocks any tool call routed to it, regardless of `require_scope`, until the config is fixed and the policy is reloaded |
+| **high** | `http://` to a non-private host (brokered credentials sent unencrypted); missing `id` (can't be targeted by `mcp:<id>` scopes or quarantined individually) | Surfaced as a finding only — not blocked |
+| **medium** | Missing/incomplete `auth` block for the configured `auth.type` — credential injection will silently be skipped; unknown `auth.type` | Surfaced as a finding only |
+| **low** | No `tools` registered; no `url` configured | Informational |
+
+A quarantined server degrades the **MCP Servers** scanner-status badge (never blocks all traffic — consistent with AgentArmor's "single unreachable/misconfigured server only degrades" design). Full findings and the current quarantine map are available at `GET /armor/api/mcp/audit` and rendered in the MCP Servers dashboard panel, including a "QUARANTINED" badge on the affected server entry.
+
 ### What this maps to (from the article on AgentQ)
 
 | AgentQ pattern | AgentArmor equivalent |
@@ -833,6 +847,7 @@ Credential values come from environment variables, populated via AgentArmor's se
 - [x] **ATR rules (459 rules)** — full [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) corpus baked in; native Go engine evaluates all six detection operators with AND/OR/NOT logic; field-to-direction mapping (user_input → inbound, agent_output → outbound); enable/disable and severity filtering from the dashboard
 - [x] **Document conversion (doc2md)** — PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding; closes the binary-upload DLP/injection bypass (documents previously skipped every text-based scanner) and cuts LLM token usage; configurable size/timeout limits, enable/disable from the dashboard
 - [x] **MCP Server Registry & Credential Brokering (Zero-Trust MCP, v1)** — register MCP servers and the tools they own; AgentArmor resolves `{"tool":...,"args":...}` calls against the registry and injects a brokered credential (bearer/basic/header) into `args` so agents never hold real MCP server credentials; optional `mcp:any` / `mcp:<server-id>` scope gate blocks unauthorized tool calls before they're forwarded; live reachability badge on the dashboard
+- [x] **MCP Config-Hardening Scanner & Quarantine (Zero-Trust MCP, Phase 1.3)** — every policy load audits `mcp_servers.servers[]` for insecure configs (binds to `0.0.0.0`/`::`, path traversal in URLs, plaintext `http://` to public hosts, broken credential-brokering setups); critical findings auto-quarantine the server, hard-blocking tool calls routed to it; quarantine degrades the MCP Servers status badge; full findings via `GET /armor/api/mcp/audit` and a new dashboard panel
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

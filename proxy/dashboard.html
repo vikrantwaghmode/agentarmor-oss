@@ -641,7 +641,7 @@ function ScannerStatusBadge({name}){
       .catch(()=>{});
   },[name]);
   if(!entry)return<span style={{fontSize:11,color:'var(--t3)'}}>checking…</span>;
-  const colors={active:'var(--green)',up:'var(--green)',down:'var(--red)','model-missing':'var(--yellow)',disabled:'var(--t3)',inactive:'var(--t3)'};
+  const colors={active:'var(--green)',up:'var(--green)',down:'var(--red)','model-missing':'var(--yellow)',degraded:'var(--yellow)',disabled:'var(--t3)',inactive:'var(--t3)'};
   const col=colors[entry.status]||'var(--t3)';
   return(
     <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
@@ -651,6 +651,39 @@ function ScannerStatusBadge({name}){
       <span style={{fontSize:11,color:col,fontWeight:600}}>{entry.status}</span>
       {entry.detail&&<span style={{fontSize:10,color:'var(--t3)'}}>· {entry.detail}</span>}
     </span>
+  );
+}
+
+/* ═══ MCP CONFIG-HARDENING AUDIT — used in MCP Servers block ═══ */
+const MCP_SEV_COLOR={critical:'var(--red)',high:'var(--yellow)',medium:'var(--purple)',low:'var(--t3)'};
+const MCP_SEV_BG={critical:'var(--red-d)',high:'var(--yellow-d)',medium:'var(--purple-d)',low:'var(--b2)'};
+
+function MCPAuditPanel({audit}){
+  if(!audit)return<div style={{fontSize:11,color:'var(--t3)',marginTop:10}}>checking…</div>;
+  const findings=audit.findings||[];
+  const quarantined=audit.quarantined||{};
+  return(
+    <div style={{marginTop:10}}>
+      <div className="cfg-label" style={{marginBottom:4}}>Configuration hardening</div>
+      {Object.keys(quarantined).length>0&&(
+        <div style={{background:'var(--red-d)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'var(--r)',padding:'8px 10px',marginBottom:8,fontSize:11,color:'var(--red)'}}>
+          <strong>{Object.keys(quarantined).length} server(s) quarantined</strong> — tool calls routed to {Object.keys(quarantined).length===1?'it are':'them are'} blocked until the policy is corrected and reloaded:
+          <ul style={{margin:'4px 0 0 18px',padding:0}}>
+            {Object.entries(quarantined).map(([id,reason])=>(
+              <li key={id}><code style={{color:'var(--t1)'}}>{id}</code>: {reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!findings.length
+        ?<div style={{fontSize:11,color:'var(--green)'}}>✓ No configuration issues found</div>
+        :findings.map((f,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'flex-start',gap:8,padding:'3px 0',fontSize:11}}>
+            <span style={{flexShrink:0,padding:'1px 6px',borderRadius:2,fontSize:9,fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase',background:MCP_SEV_BG[f.severity]||'var(--b2)',color:MCP_SEV_COLOR[f.severity]||'var(--t3)'}}>{f.severity}</span>
+            <span style={{color:'var(--t2)'}}><code style={{color:'var(--t3)'}}>{f.server_id||'(no id)'}</code>: {f.issue}</span>
+          </div>
+        ))}
+    </div>
   );
 }
 
@@ -1412,13 +1445,19 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
           <div className="cfg-sub" style={{marginBottom:8}}>Edit mcp_servers.servers in policy.yaml to add/remove servers — each maps a list of tool names to a credential (env var name only, never the secret value)</div>
           {!(pol?.mcp_servers?.servers||[]).length
             ?<div className="empty" style={{padding:'12px 0'}}>No MCP servers registered.</div>
-            :pol.mcp_servers.servers.map(s=>(
-              <div key={s.id} style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',padding:'10px 12px',marginBottom:8,background:'var(--s1)'}}>
+            :pol.mcp_servers.servers.map(s=>{
+              const quarantineReason=(mcpAudit?.quarantined||{})[s.id];
+              return(
+              <div key={s.id} style={{border:`1px solid ${quarantineReason?'rgba(239,68,68,.4)':'var(--b1)'}`,borderRadius:'var(--r)',padding:'10px 12px',marginBottom:8,background:'var(--s1)'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
                   <span style={{fontSize:12,fontWeight:700,color:'var(--t2)'}}>{s.name||s.id}</span>
-                  <span style={{fontSize:10,fontFamily:'var(--mono)',color:'var(--t3)'}}>{s.auth?.type||'none'}</span>
+                  <span style={{display:'flex',alignItems:'center',gap:6}}>
+                    {quarantineReason&&<span title={quarantineReason} className="badge badge-blocked">QUARANTINED</span>}
+                    <span style={{fontSize:10,fontFamily:'var(--mono)',color:'var(--t3)'}}>{s.auth?.type||'none'}</span>
+                  </span>
                 </div>
                 {s.description&&<div style={{fontSize:11,color:'var(--t3)',marginBottom:6}}>{s.description}</div>}
+                {quarantineReason&&<div style={{fontSize:11,color:'var(--red)',marginBottom:6}}>{quarantineReason}</div>}
                 <div className="tag-list">
                   {(s.tools||[]).map(t=><span key={t} className="tag">{t}</span>)}
                 </div>
@@ -1427,8 +1466,10 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                   {s.url&&<> · url: <code style={{color:'var(--t2)'}}>{s.url}</code></>}
                 </div>
               </div>
-            ))}
+              );
+            })}
         </div>
+        <MCPAuditPanel audit={mcpAudit}/>
       </Block>
 
       {/* Skills RAG & Routing */}
@@ -1489,8 +1530,13 @@ function Policy({role}){
   const[testInput,setTestInput]=useState('');
   const[selectedRule,setSelectedRule]=useState(null);
   const[openGroups,setOpenGroups]=useState({});
+  const[mcpAudit,setMcpAudit]=useState(null);
   const isAdmin=role==='admin';
   useEffect(()=>{api('policy').then(r=>r.json()).then(d=>{setPol(d);setDirty(false);});},[]);
+  useEffect(()=>{
+    const load=()=>api('mcp/audit').then(r=>r.json()).then(setMcpAudit).catch(()=>{});
+    load();const t=setInterval(load,15000);return()=>clearInterval(t);
+  },[]);
   const toggleRule=(key,lk,idx)=>{
     if(!isAdmin)return;
     setPol(p=>{const n=JSON.parse(JSON.stringify(p));n.scanners[key][lk][idx].enabled=!n.scanners[key][lk][idx].enabled;return n;});
