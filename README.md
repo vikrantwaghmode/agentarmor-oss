@@ -63,6 +63,7 @@ AgentArmor is built around three principles:
 | DNS Rebinding | In | Block | Hostnames in URLs that resolve to private/metadata IPs |
 | Internal IP / SSRF | In | Block | Literal RFC 1918, loopback, link-local IPs |
 | Malicious Content | Both | Block | SQLi, XSS, SSRF, command injection, executables |
+| Execution Containment Scanner | In | Block / Alert | Scans the `args` of configured tool calls (default: `exec`) for container-escape, destructive-filesystem, and firewall-tamper patterns; **critical** findings hard-block the call even for a session that already holds Zero-Trust `tool:exec` approval — closing the gap between "may run exec" and "may run *this* command"; high/medium findings (credential-file access, path traversal, privilege escalation, pipe-to-shell) are surfaced as alerts without blocking; configurable via `execution_scanning.patterns` |
 | Intent Scoring | In | Block | Stateful tool-call sequences per session (`read_file → post_request` etc.) |
 | Anomaly Scoring | In | Block/Alert | 3-signal behavioural scorer (0–1); configurable alert + block thresholds |
 | Zero-Trust Tool Approval | In | Block | `exec`, `browser`, `sessions_spawn` blocked until admin approves per-session; bypassable with `tool:exec` / `tool:any` scope |
@@ -323,6 +324,31 @@ skill_scanning:
       enabled: true
       regex: '(?i)(ignore (all |any )?(previous|prior|above) instructions|disregard (your|the) system prompt|do not (tell|inform|notify) the user)'
       description: "Embedded prompt-injection / jailbreak directive aimed at the orchestrating agent"
+
+# Execution Containment Scanner (proxy-realistic "deep isolation hooks")
+# Scans the args of configured tool calls (default: exec) for container-escape,
+# destructive-filesystem, and firewall-tamper patterns. A "critical" finding
+# hard-blocks the call even for a session holding Zero-Trust tool:exec approval —
+# high/medium findings are alerted but not blocked.
+execution_scanning:
+  enabled: true
+  tools: [exec]                      # tool names whose args are scanned
+  patterns:
+    - id: container-escape
+      severity: critical
+      enabled: true
+      regex: '(?i)(/var/run/docker\.sock|/proc/1/root|nsenter\b|--privileged|chroot\s+/|mount\s+.*\s+/proc)'
+      description: "Attempts to access the host filesystem or escape the container"
+    - id: destructive-filesystem
+      severity: critical
+      enabled: true
+      regex: 'rm\s+-rf\s+(/|\*|\$HOME|~)(\s|$)|:\(\)\{\s*:\|:&\s*\};:'
+      description: "Destructive filesystem command or fork bomb"
+    - id: firewall-tamper
+      severity: critical
+      enabled: true
+      regex: '(?i)(iptables\s+(-F|-X|--flush)|ip6tables\s+(-F|-X|--flush)|agentarmor-firewall)'
+      description: "Attempts to flush or disable AgentArmor's egress firewall"
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -368,6 +394,20 @@ Every skill loaded from `./skills/<id>/` — its `skill.yaml` (`name`, `descript
 | **medium** | `outbound-network-call`, `large-base64-blob` | Surfaced as a finding only |
 
 A quarantined skill can't be activated from the dashboard — `POST /armor/api/skills/toggle` returns 403 with the quarantine reason. Full findings and the current quarantine map are available at `GET /armor/api/skills` (`audit.findings` / `audit.quarantined`) and rendered in the Skills tab, including a "QUARANTINED" badge on the affected skill card. All patterns are regexes configurable in `skill_scanning.patterns` — add your own or disable defaults that produce false positives for your skills.
+
+### Execution containment scanning (Phase 3.1)
+
+> **Honest scoping note:** the original roadmap for this phase described Kubernetes-CRD-managed, gVisor-isolated sandboxes intercepting every agent code execution. AgentArmor is a single-container JSON-level reverse proxy — it never spawns or executes agent code itself (`exec`/`browser`/`sessions_spawn` run inside the gateway process it fronts), so it has no subprocess or container to sandbox. Standing up that architecture would mean mounting the host Docker socket or granting an in-cluster Kubernetes API — a major new trust boundary, out of scope for this project. What follows is the proxy-realistic equivalent: inspecting the *arguments* of execution tool calls before they're forwarded.
+
+Every `{"tool":"...","args":{...}}` call whose tool name appears in `execution_scanning.tools` (default: `exec`) has its raw `args` JSON scanned against `execution_scanning.patterns`:
+
+| Severity | Default patterns | Effect |
+|----------|-------------------|--------|
+| **critical** | `container-escape`, `destructive-filesystem`, `firewall-tamper` | Call is **hard-blocked** — `EXEC_BLOCK` alert + audit log entry. This applies **regardless of Zero-Trust Tool Approval**: a session approved to run `exec` at all is not thereby approved to run *this* command |
+| **high** | `credential-file-access`, `path-traversal` | Surfaced as an `EXEC_ALERT` — not blocked |
+| **medium** | `privilege-escalation`, `pipe-to-shell` | Surfaced as an `EXEC_ALERT` — not blocked |
+
+Zero-Trust Tool Approval answers "is this session allowed to call `exec` at all?"; the Execution Containment Scanner answers "is *this specific command* one that should never run, no matter who's asking?" — critical patterns (mounting `/proc/1/root`, `rm -rf /`, flushing AgentArmor's own egress `iptables` chain) have no legitimate use for an AI agent, so there's deliberately no `allow_scopes` bypass for them. All patterns are regexes configurable in `execution_scanning.patterns`; findings appear in the Audit Log tab and the Alerts ticker via the existing `logAuditEvent`/`addAlert` plumbing.
 
 ### Sidecars
 
@@ -926,6 +966,7 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 - [x] **MCP Context Binding (Zero-Trust MCP, Phase 1.2)** — every brokered credential injection mints a short-lived, HMAC-signed `_mcp_context_token` binding the call to its session/tenant; a later tool call carrying a context token (e.g. forwarded by the agent to authorize a chained call) must verify for the same session or is hard-blocked as unverified task propagation — closes the "confused deputy" gap where Server A's response could trick the agent into invoking Server B with a stolen context
 - [x] **MCP Dynamic OAuth2 Token Brokering (Zero-Trust MCP, Phase 1.1)** — `auth.type: oauth2` fetches short-lived access tokens from the IdP's token endpoint (`client_credentials` or `refresh_token` grant) instead of injecting a static `token_env` PAT; tokens are cached per server and auto-refreshed via `golang.org/x/oauth2`, with the cache cleared on every policy reload; config-hardening audit validates `token_url` and grant-type-specific env vars and flags plaintext `http://` token endpoints
 - [x] **Skill Behavioral-Intent Scanner & Quarantine (Supply-Chain Defense, Phase 2.1)** — every policy load scans each skill's system prompt, keywords, description, and knowledge docs for "dual-vector" toxic-skill indicators (embedded prompt-injection directives, pipe-to-shell, base64-decode-exec, credential-file exfiltration, destructive commands); critical findings auto-quarantine the skill — removed from header/marker/keyword/semantic detection and its content withheld until fixed and the policy is reloaded; findings via `GET /armor/api/skills` and a new Skills-tab audit panel with quarantine badges
+- [x] **Execution Containment Scanner (Phase 3.1)** — scans the `args` of configured tool calls (default: `exec`) for container-escape, destructive-filesystem, and firewall-tamper patterns; critical findings hard-block the call (`EXEC_BLOCK`) even for sessions holding Zero-Trust `tool:exec` approval — closing the "may run exec at all" vs "may run *this* command" gap; high/medium findings (credential-file access, path traversal, privilege escalation, pipe-to-shell) raise `EXEC_ALERT` without blocking; configurable via `execution_scanning.patterns`
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

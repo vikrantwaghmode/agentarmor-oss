@@ -200,11 +200,12 @@ type Config struct {
 		// Scopes granted to every authenticated user regardless of group membership.
 		DefaultScopes []string `yaml:"default_scopes" json:"default_scopes"`
 	} `yaml:"sso" json:"sso"`
-	AgentRouting  AgentRoutingConfig  `yaml:"agent_routing" json:"agent_routing"`
-	ATRRules      ATRConfig           `yaml:"atr_rules" json:"atr_rules"`
-	DocConversion DocConversionConfig `yaml:"doc_conversion" json:"doc_conversion"`
-	MCPServers    MCPServersConfig    `yaml:"mcp_servers" json:"mcp_servers"`
-	SkillScanning SkillScanningConfig `yaml:"skill_scanning" json:"skill_scanning"`
+	AgentRouting      AgentRoutingConfig      `yaml:"agent_routing" json:"agent_routing"`
+	ATRRules          ATRConfig               `yaml:"atr_rules" json:"atr_rules"`
+	DocConversion     DocConversionConfig     `yaml:"doc_conversion" json:"doc_conversion"`
+	MCPServers        MCPServersConfig        `yaml:"mcp_servers" json:"mcp_servers"`
+	SkillScanning     SkillScanningConfig     `yaml:"skill_scanning" json:"skill_scanning"`
+	ExecutionScanning ExecutionScanningConfig `yaml:"execution_scanning" json:"execution_scanning"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -252,6 +253,7 @@ var compiledPIIRegexes []*regexp.Regexp
 var compiledMaliciousRegexes []*regexp.Regexp
 var compiledInternalIPRegexes []*regexp.Regexp
 var compiledCanaryRegexes []*regexp.Regexp
+var compiledExecRegexes []*regexp.Regexp
 var policyLock sync.RWMutex
 
 // ScannerRuleCounts holds the number of enabled rules for each scanner and firewall
@@ -1603,6 +1605,15 @@ func loadPolicy() {
 		}
 	}
 
+	// Compile Execution Containment Scanner patterns (Phase 3.1) — index-aligned
+	// with newPolicy.ExecutionScanning.Patterns, same convention as the malicious
+	// content scanner above.
+	var newExecRegexes []*regexp.Regexp
+	for _, rule := range newPolicy.ExecutionScanning.Patterns {
+		rx, _ := compileRegex(rule.Regex)
+		newExecRegexes = append(newExecRegexes, rx)
+	}
+
 	// Set Rate Limit RPM for dashboard stats
 	if newPolicy.Scanners.RateLimiting.Enabled {
 		currentRuleCounts.RateLimitRpm = newPolicy.Scanners.RateLimiting.RequestsPerMinute
@@ -1630,6 +1641,7 @@ func loadPolicy() {
 	compiledMaliciousRegexes = newMaliciousRegexes
 	compiledInternalIPRegexes = newInternalIPRegexes
 	compiledCanaryRegexes = newCanaryRegexes
+	compiledExecRegexes = newExecRegexes
 	globalRuleCounts = currentRuleCounts // Store the calculated counts
 	policyLock.Unlock()
 
@@ -2637,6 +2649,30 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 			}
 
 			sessionHistoryLock.Unlock()
+		}
+	}
+
+	// --- Execution Containment Scanner (Request only, hard block on critical) ---
+	// Scans the args of configured tool calls (default: exec) for container-escape,
+	// destructive-filesystem, and firewall-tamper patterns — independent of (and in
+	// addition to) the Zero-Trust Tool Approval gate above, so a critical finding
+	// hard-blocks the call even for a session that already holds approval to run
+	// exec at all. High/medium findings are alerted but not blocked.
+	if mcpToolCallParsed && policy.ExecutionScanning.Enabled &&
+		isExecScanTarget(mcpToolCall.Tool, policy.ExecutionScanning.Tools) {
+		findings := auditExecArgs(mcpToolCall.Tool, mcpToolCall.Args, compiledExecRegexes, policy.ExecutionScanning.Patterns)
+		for _, f := range findings {
+			if f.Severity == "critical" {
+				result.Blocked = true
+				result.RuleMatched = fmt.Sprintf("Execution Containment: %s — %s (%s)", f.RuleID, f.Issue, f.Snippet)
+				logAuditEvent("", sessionKey, "Request", "BLOCKED", result.RuleMatched, f.Snippet)
+				go addAlert("EXEC_BLOCK", result.RuleMatched)
+				return result
+			}
+		}
+		if len(findings) > 0 {
+			f := findings[0]
+			go addAlert("EXEC_ALERT", fmt.Sprintf("%s: %s (%s) — %s", mcpToolCall.Tool, f.RuleID, f.Severity, f.Issue))
 		}
 	}
 

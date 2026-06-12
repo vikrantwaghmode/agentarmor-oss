@@ -626,3 +626,43 @@ skill_scanning:
         enabled: true
         regex: '[A-Za-z0-9+/]{200,}={0,2}'
         description: "Large base64-like blob — review for obfuscated payloads"
+
+execution_scanning:
+    enabled: true
+    tools: [exec]   # tool names whose args are scanned; add bash/shell/run_code etc. as needed
+    patterns:
+      - id: container-escape
+        severity: critical
+        enabled: true
+        regex: '(?i)(/var/run/docker\.sock|/proc/1/root|nsenter\b|--privileged|chroot\s+/|mount\s+.*\s+/proc)'
+        description: "Attempts to access the host filesystem or escape the container"
+      - id: destructive-filesystem
+        severity: critical
+        enabled: true
+        regex: 'rm\s+-rf\s+(/|\*|\$HOME|~)(\s|$)|:\(\)\{\s*:\|:&\s*\};:'
+        description: "Destructive filesystem command or fork bomb"
+      - id: firewall-tamper
+        severity: critical
+        enabled: true
+        regex: '(?i)(iptables\s+(-F|-X|--flush)|ip6tables\s+(-F|-X|--flush)|agentarmor-firewall)'
+        description: "Attempts to flush or disable AgentArmor's egress firewall"
+      - id: credential-file-access
+        severity: high
+        enabled: true
+        regex: '(?i)(~/\.ssh/id_rsa|~/\.aws/credentials|/etc/shadow|\.env\b)'
+        description: "Reads a sensitive credential file"
+      - id: path-traversal
+        severity: high
+        enabled: true
+        regex: '(\.\./){2,}'
+        description: "Path traversal — accesses files outside the working directory"
+      - id: privilege-escalation
+        severity: medium
+        enabled: true
+        regex: '(?i)\b(sudo|su\s+-|chmod\s+\+s|setuid)\b'
+        description: "Privilege escalation attempt"
+      - id: pipe-to-shell
+        severity: medium
+        enabled: true
+        regex: '(curl|wget)\s+[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|python3?)\b'
+        description: "Downloads remote content and pipes it directly into a shell/interpreter"
