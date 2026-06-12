@@ -2470,6 +2470,10 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 
 	// --- MCP Zero-Trust Gate (Request only) ---
 	// If this tool call targets a tool registered to an MCP server:
+	//  0. A _mcp_context_token carried in args (Phase 1.2 — forwarded by the
+	//     agent to authorize a "chained" call to a different server) must
+	//     verify for THIS session, or the call is hard-blocked as
+	//     unverified task propagation (confused deputy).
 	//  1. A server quarantined by the config-hardening audit (Phase 1.3 —
 	//     e.g. binds to 0.0.0.0, path traversal in its url) is hard-blocked
 	//     regardless of scope, until the policy is corrected and reloaded.
@@ -2479,6 +2483,15 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	// so the brokered credential isn't redacted as if it were an
 	// agent-supplied secret.
 	if mcpToolCallParsed && policy.MCPServers.Enabled {
+		if tok, ok := extractMCPContextToken(mcpToolCall.Args); ok {
+			if err := validateMCPContextToken(tok, sessionKey, tnt.Meta.ID); err != nil {
+				result.Blocked = true
+				result.RuleMatched = fmt.Sprintf("MCP: context-binding token rejected (%v) — possible confused-deputy task propagation for tool '%s'", err, mcpToolCall.Tool)
+				logAuditEvent("", sessionKey, "Request", "BLOCKED", result.RuleMatched, mcpToolCall.Tool)
+				return result
+			}
+		}
+
 		if srv := findMCPServerForTool(policy.MCPServers, mcpToolCall.Tool); srv != nil {
 			if reason, quarantined := mcpServerQuarantined(srv.ID); quarantined {
 				result.Blocked = true
@@ -2860,9 +2873,12 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	// brokers in here can't be matched and stripped out by the redact_patterns
 	// rules above. requestFrame may already have been mutated in place by the
 	// redaction step; marshalling it again here preserves those edits and
-	// layers the credential injection on top.
+	// layers the credential injection on top. A fresh context-binding token
+	// (Phase 1.2) is minted for this session/server so AgentArmor can verify
+	// session continuity if the agent forwards it on a later chained call.
 	if mcpServer != nil && !result.Blocked && soleMessageRef != nil {
-		if rewritten, ok := buildMCPInjectedToolCall(mcpToolCall.Tool, mcpToolCall.Args, mcpServer); ok {
+		contextToken := issueMCPContextToken(sessionKey, tnt.Meta.ID, mcpServer.ID)
+		if rewritten, ok := buildMCPInjectedToolCall(mcpToolCall.Tool, mcpToolCall.Args, mcpServer, contextToken); ok {
 			soleMessageRef["content"] = rewritten
 			if modified, err := json.Marshal(requestFrame); err == nil {
 				result.Payload = string(modified)

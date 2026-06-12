@@ -53,6 +53,7 @@ AgentArmor is built around three principles:
 | Document Conversion | In | Convert + Scan | PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding — closes the binary-upload DLP/injection bypass and cuts LLM token usage |
 | MCP Credential Brokering | Out | Inject + Block | Registers MCP servers and the tool names they own; resolves `{"tool":...,"args":...}` calls against the registry and injects an AgentArmor-managed credential — agents never hold the real API key; zero-trust scope gate (`mcp:any` / `mcp:<server-id>`) blocks unauthorized tool calls before forwarding |
 | MCP Config-Hardening Scanner | Out | Quarantine | Audits every registered `mcp_servers.servers[]` entry on each policy load for insecure configs — binds to `0.0.0.0`/`::` (NeighborJack-style exposure) or `..` path traversal in the URL are **critical** and auto-quarantine the server, hard-blocking any tool call routed to it regardless of scope; plaintext `http://` to a public host, missing IDs, and broken credential-brokering setups are surfaced as high/medium findings without blocking traffic; full results via `GET /armor/api/mcp/audit` and the MCP Servers dashboard panel |
+| MCP Context Binding | Out | Block | Every brokered MCP credential injection is paired with a short-lived, HMAC-signed `_mcp_context_token` binding the call to the originating session/tenant; if a later tool call arrives carrying a context token (an agent forwarding one to authorize a "chained" call), AgentArmor verifies its signature, expiry, and session/tenant match — blocking unverified task propagation (confused-deputy: Server A autonomously invoking Server B with a stolen/forged context) |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -810,6 +811,18 @@ Every time the policy is loaded (startup or hot-reload), AgentArmor audits each 
 
 A quarantined server degrades the **MCP Servers** scanner-status badge (never blocks all traffic — consistent with AgentArmor's "single unreachable/misconfigured server only degrades" design). Full findings and the current quarantine map are available at `GET /armor/api/mcp/audit` and rendered in the MCP Servers dashboard panel, including a "QUARANTINED" badge on the affected server entry.
 
+### MCP context binding (confused-deputy prevention)
+
+Every successful MCP credential injection also mints a short-lived (5 minute), HMAC-signed `_mcp_context_token` and merges it into the tool call's `args` alongside the brokered credential. The token binds the call to the session and tenant it was issued for — nothing else is needed in `policy.yaml` to enable this; it's part of the same zero-trust gate as credential brokering and config-hardening.
+
+If a subsequent tool call arrives with a `_mcp_context_token` already present in its `args` — e.g. an agent forwarding a token from a prior MCP response to authorize a "chained" call to a different server — AgentArmor verifies before doing anything else:
+
+- the signature (HMAC-HS256, same secret as agent JWTs),
+- the token hasn't expired, and
+- the token's session and tenant match the request's.
+
+If any check fails, the call is hard-blocked as **unverified task propagation** — the textbook "confused deputy" scenario where a malicious or compromised MCP server's response tricks the agent into reusing another session's brokered context to invoke a second server. Calls that don't carry a context token at all are unaffected and continue through the normal scope/quarantine checks above.
+
 ### What this maps to (from the article on AgentQ)
 
 | AgentQ pattern | AgentArmor equivalent |
@@ -848,6 +861,7 @@ A quarantined server degrades the **MCP Servers** scanner-status badge (never bl
 - [x] **Document conversion (doc2md)** — PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding; closes the binary-upload DLP/injection bypass (documents previously skipped every text-based scanner) and cuts LLM token usage; configurable size/timeout limits, enable/disable from the dashboard
 - [x] **MCP Server Registry & Credential Brokering (Zero-Trust MCP, v1)** — register MCP servers and the tools they own; AgentArmor resolves `{"tool":...,"args":...}` calls against the registry and injects a brokered credential (bearer/basic/header) into `args` so agents never hold real MCP server credentials; optional `mcp:any` / `mcp:<server-id>` scope gate blocks unauthorized tool calls before they're forwarded; live reachability badge on the dashboard
 - [x] **MCP Config-Hardening Scanner & Quarantine (Zero-Trust MCP, Phase 1.3)** — every policy load audits `mcp_servers.servers[]` for insecure configs (binds to `0.0.0.0`/`::`, path traversal in URLs, plaintext `http://` to public hosts, broken credential-brokering setups); critical findings auto-quarantine the server, hard-blocking tool calls routed to it; quarantine degrades the MCP Servers status badge; full findings via `GET /armor/api/mcp/audit` and a new dashboard panel
+- [x] **MCP Context Binding (Zero-Trust MCP, Phase 1.2)** — every brokered credential injection mints a short-lived, HMAC-signed `_mcp_context_token` binding the call to its session/tenant; a later tool call carrying a context token (e.g. forwarded by the agent to authorize a chained call) must verify for the same session or is hard-blocked as unverified task propagation — closes the "confused deputy" gap where Server A's response could trick the agent into invoking Server B with a stolen context
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

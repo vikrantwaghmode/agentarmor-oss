@@ -20,6 +20,8 @@ package main
 // server — sessions without it are blocked before the call is forwarded.
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -194,9 +196,11 @@ type mcpToolCallEnvelope struct {
 }
 
 // buildMCPInjectedToolCall returns the JSON for a tool-call envelope with the
-// resolved MCP credential merged into args, or ok=false if the credential
-// isn't configured (env var unset) or the envelope can't be re-marshalled.
-func buildMCPInjectedToolCall(tool string, args json.RawMessage, server *MCPServer) (string, bool) {
+// resolved MCP credential and a context-binding token (see "context binding"
+// below) merged into args, or ok=false if the credential isn't configured
+// (env var unset) or the envelope can't be re-marshalled. contextToken is
+// omitted from args if empty.
+func buildMCPInjectedToolCall(tool string, args json.RawMessage, server *MCPServer, contextToken string) (string, bool) {
 	headerName, headerValue, ok := resolveMCPCredential(server.Auth)
 	if !ok {
 		return "", false
@@ -214,6 +218,9 @@ func buildMCPInjectedToolCall(tool string, args json.RawMessage, server *MCPServ
 	argsMap["_mcp_server_id"] = server.ID
 	argsMap["_mcp_auth_header_name"] = headerName
 	argsMap["_mcp_auth_header_value"] = headerValue
+	if contextToken != "" {
+		argsMap["_mcp_context_token"] = contextToken
+	}
 
 	newArgs, err := json.Marshal(argsMap)
 	if err != nil {
@@ -363,4 +370,92 @@ func mcpServerQuarantined(serverID string) (reason string, ok bool) {
 	defer mcpAuditMu.RUnlock()
 	reason, ok = mcpQuarantined[serverID]
 	return
+}
+
+// ─── context binding (confused-deputy prevention) ──────────────────────────────
+//
+// Phase 1.2 of zero-trust MCP brokering: every successful credential
+// injection also mints a short-lived, HMAC-signed context-binding token
+// (_mcp_context_token) that ties the call to the session it was brokered
+// for. If a later tool call arrives carrying a _mcp_context_token — e.g. an
+// agent forwarding a token from a prior MCP response in order to authorize a
+// "chained" call to a different server — AgentArmor verifies the signature,
+// expiry, and that the token was issued for THIS session before allowing the
+// call, blocking unverified task propagation (Server A autonomously invoking
+// Server B using a stolen or forged context).
+//
+// Signing reuses the same HMAC-HS256 secret as agent JWTs (tokens.go).
+
+const mcpContextTokenTTL = 5 * time.Minute
+
+// mcpContextClaims is the payload of a context-binding token.
+type mcpContextClaims struct {
+	SessionKey string `json:"sid"`
+	TenantID   string `json:"tnt"`
+	ServerID   string `json:"srv"`
+	ExpiresAt  int64  `json:"exp"`
+}
+
+// issueMCPContextToken mints a signed context-binding token for a tool call
+// brokered to serverID within the given session/tenant.
+func issueMCPContextToken(sessionKey, tenantID, serverID string) string {
+	claims := mcpContextClaims{
+		SessionKey: sessionKey,
+		TenantID:   tenantID,
+		ServerID:   serverID,
+		ExpiresAt:  time.Now().Add(mcpContextTokenTTL).Unix(),
+	}
+	pay, _ := json.Marshal(claims)
+	p := b64url(pay)
+	mac := hmac.New(sha256.New, jwtSecret)
+	mac.Write([]byte(p))
+	return p + "." + b64url(mac.Sum(nil))
+}
+
+// validateMCPContextToken verifies a context-binding token's signature and
+// expiry, and that it was issued for the given session and tenant. A non-nil
+// error means the token is forged, expired, or bound to a different
+// session/tenant — i.e. unverified task propagation.
+func validateMCPContextToken(token, sessionKey, tenantID string) error {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("malformed token")
+	}
+	mac := hmac.New(sha256.New, jwtSecret)
+	mac.Write([]byte(parts[0]))
+	if !hmac.Equal([]byte(parts[1]), []byte(b64url(mac.Sum(nil)))) {
+		return fmt.Errorf("invalid signature")
+	}
+	payBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	var claims mcpContextClaims
+	if err := json.Unmarshal(payBytes, &claims); err != nil {
+		return fmt.Errorf("parse payload: %w", err)
+	}
+	if time.Now().Unix() > claims.ExpiresAt {
+		return fmt.Errorf("token expired")
+	}
+	if claims.SessionKey != sessionKey {
+		return fmt.Errorf("token was issued for a different session")
+	}
+	if claims.TenantID != tenantID {
+		return fmt.Errorf("token was issued for a different tenant")
+	}
+	return nil
+}
+
+// extractMCPContextToken returns the _mcp_context_token field from a tool
+// call's args, if present.
+func extractMCPContextToken(args json.RawMessage) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(args, &m); err != nil {
+		return "", false
+	}
+	tok, ok := m["_mcp_context_token"].(string)
+	return tok, ok && tok != ""
 }
