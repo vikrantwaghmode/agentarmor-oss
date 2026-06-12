@@ -654,9 +654,9 @@ function ScannerStatusBadge({name}){
   );
 }
 
-/* ═══ MCP CONFIG-HARDENING AUDIT — used in MCP Servers block ═══ */
-const MCP_SEV_COLOR={critical:'var(--red)',high:'var(--yellow)',medium:'var(--purple)',low:'var(--t3)'};
-const MCP_SEV_BG={critical:'var(--red-d)',high:'var(--yellow-d)',medium:'var(--purple-d)',low:'var(--b2)'};
+/* ═══ SEVERITY-CLASSIFIED AUDIT FINDINGS — shared by MCP config-hardening and skill scanning ═══ */
+const SEV_COLOR={critical:'var(--red)',high:'var(--yellow)',medium:'var(--purple)',low:'var(--t3)'};
+const SEV_BG={critical:'var(--red-d)',high:'var(--yellow-d)',medium:'var(--purple-d)',low:'var(--b2)'};
 
 function MCPAuditPanel({audit}){
   if(!audit)return<div style={{fontSize:11,color:'var(--t3)',marginTop:10}}>checking…</div>;
@@ -679,8 +679,41 @@ function MCPAuditPanel({audit}){
         ?<div style={{fontSize:11,color:'var(--green)'}}>✓ No configuration issues found</div>
         :findings.map((f,i)=>(
           <div key={i} style={{display:'flex',alignItems:'flex-start',gap:8,padding:'3px 0',fontSize:11}}>
-            <span style={{flexShrink:0,padding:'1px 6px',borderRadius:2,fontSize:9,fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase',background:MCP_SEV_BG[f.severity]||'var(--b2)',color:MCP_SEV_COLOR[f.severity]||'var(--t3)'}}>{f.severity}</span>
+            <span style={{flexShrink:0,padding:'1px 6px',borderRadius:2,fontSize:9,fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase',background:SEV_BG[f.severity]||'var(--b2)',color:SEV_COLOR[f.severity]||'var(--t3)'}}>{f.severity}</span>
             <span style={{color:'var(--t2)'}}><code style={{color:'var(--t3)'}}>{f.server_id||'(no id)'}</code>: {f.issue}</span>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/* ═══ SKILL BEHAVIORAL-INTENT SCAN — used in Skills tab (Phase 2.1) ═══ */
+function SkillAuditPanel({audit}){
+  if(!audit)return<div style={{fontSize:11,color:'var(--t3)',marginTop:16}}>checking…</div>;
+  const findings=audit.findings||[];
+  const quarantined=audit.quarantined||{};
+  return(
+    <div style={{marginTop:16}}>
+      <div className="cfg-label" style={{marginBottom:4}}>Behavioral-intent scan</div>
+      {Object.keys(quarantined).length>0&&(
+        <div style={{background:'var(--red-d)',border:'1px solid rgba(239,68,68,.3)',borderRadius:'var(--r)',padding:'8px 10px',marginBottom:8,fontSize:11,color:'var(--red)'}}>
+          <strong>{Object.keys(quarantined).length} skill(s) quarantined</strong> — withheld from detection and context until the skill or <code>skill_scanning.patterns</code> is fixed and the policy is reloaded:
+          <ul style={{margin:'4px 0 0 18px',padding:0}}>
+            {Object.entries(quarantined).map(([id,reason])=>(
+              <li key={id}><code style={{color:'var(--t1)'}}>{id}</code>: {reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!findings.length
+        ?<div style={{fontSize:11,color:'var(--green)'}}>✓ No behavioral-intent issues found</div>
+        :findings.map((f,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'flex-start',gap:8,padding:'3px 0',fontSize:11}}>
+            <span style={{flexShrink:0,padding:'1px 6px',borderRadius:2,fontSize:9,fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase',background:SEV_BG[f.severity]||'var(--b2)',color:SEV_COLOR[f.severity]||'var(--t3)'}}>{f.severity}</span>
+            <span style={{color:'var(--t2)'}}>
+              <code style={{color:'var(--t3)'}}>{f.skill_id}</code> · {f.rule_id}: {f.issue}
+              {f.snippet&&<div style={{color:'var(--t3)',marginTop:2}}><code style={{color:'var(--t3)'}}>{f.snippet}</code></div>}
+            </span>
           </div>
         ))}
     </div>
@@ -2259,23 +2292,28 @@ function Skills({data,role,onSkillsChange}){
       }
       <div className="skills-grid">
         {skills.map(s=>(
-          <div key={s.id} className="skill-card" style={{borderColor:s.active?'var(--purple)':''}}>
+          <div key={s.id} className="skill-card" style={{borderColor:s.quarantined?'rgba(239,68,68,.4)':(s.active?'var(--purple)':'')}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
               <div className="skill-icon" style={{marginBottom:0}}>{ICONS[s.id]||'🧠'}</div>
-              {isAdmin?(
-                <button onClick={()=>toggle(s.id)} disabled={toggling===s.id}
-                  style={{padding:'3px 10px',borderRadius:10,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,transition:'all .15s',
-                    background:s.active?'var(--purple)':'var(--b2)',
-                    color:s.active?'#fff':'var(--t3)',
-                    opacity:toggling===s.id?.6:1}}>
-                  {toggling===s.id?'…':s.active?'● Active':'Activate'}
-                </button>
-              ):(
-                s.active&&<span style={{fontSize:10,color:'var(--purple)',fontWeight:700,padding:'2px 8px',border:'1px solid var(--purple)',borderRadius:10}}>● Active</span>
-              )}
+              <span style={{display:'flex',alignItems:'center',gap:6}}>
+                {s.quarantined&&<span title={s.quarantine_reason} className="badge badge-blocked">QUARANTINED</span>}
+                {isAdmin?(
+                  <button onClick={()=>toggle(s.id)} disabled={toggling===s.id||s.quarantined}
+                    title={s.quarantined?s.quarantine_reason:''}
+                    style={{padding:'3px 10px',borderRadius:10,border:'none',cursor:s.quarantined?'not-allowed':'pointer',fontSize:11,fontWeight:600,transition:'all .15s',
+                      background:s.active?'var(--purple)':'var(--b2)',
+                      color:s.active?'#fff':'var(--t3)',
+                      opacity:(toggling===s.id||s.quarantined)?.6:1}}>
+                    {toggling===s.id?'…':s.active?'● Active':'Activate'}
+                  </button>
+                ):(
+                  s.active&&<span style={{fontSize:10,color:'var(--purple)',fontWeight:700,padding:'2px 8px',border:'1px solid var(--purple)',borderRadius:10}}>● Active</span>
+                )}
+              </span>
             </div>
             <div className="skill-name">{s.name}</div>
             <div className="skill-desc">{s.description}</div>
+            {s.quarantined&&<div style={{fontSize:11,color:'var(--red)',marginTop:6}}>{s.quarantine_reason}</div>}
             <div className="skill-footer">
               <span className="skill-docs">{s.docs} knowledge docs</span>
               <span className="skill-id">{s.id}</span>
@@ -2288,6 +2326,7 @@ function Skills({data,role,onSkillsChange}){
           <b style={{color:'var(--t2)'}}>Multiple skills active:</b> system prompts and RAG knowledge from all {activeCount} skills are merged in order before each request.
         </p>
       )}
+      {isAdmin&&<SkillAuditPanel audit={data.audit}/>}
     </div>
   );
 }

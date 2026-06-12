@@ -204,6 +204,7 @@ type Config struct {
 	ATRRules      ATRConfig           `yaml:"atr_rules" json:"atr_rules"`
 	DocConversion DocConversionConfig `yaml:"doc_conversion" json:"doc_conversion"`
 	MCPServers    MCPServersConfig    `yaml:"mcp_servers" json:"mcp_servers"`
+	SkillScanning SkillScanningConfig `yaml:"skill_scanning" json:"skill_scanning"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -1638,6 +1639,18 @@ func loadPolicy() {
 	// tool calls routed to it until the policy is corrected.
 	mcpFindings, mcpQuarantine := auditMCPServers(newPolicy.MCPServers)
 	setMCPAudit(mcpFindings, mcpQuarantine)
+	resetMCPOAuthSources()
+
+	// Skill behavioral-intent audit (Phase 2.1) — recomputed on every policy
+	// load since skill_scanning.patterns may have changed. "critical" findings
+	// quarantine a skill: DetectSkill stops selecting it and
+	// BuildSkillContext withholds its content until the skill or the matching
+	// pattern is fixed and the policy is reloaded.
+	skillFindings, skillQuarantine := auditSkills(newPolicy.SkillScanning)
+	setSkillAudit(skillFindings, skillQuarantine)
+	for id, reason := range skillQuarantine {
+		log.Printf("🔴 Skill %q quarantined by behavioral-intent scan: %s", id, reason)
+	}
 	for _, f := range mcpFindings {
 		if f.Severity == "critical" {
 			log.Printf("🔴 MCP server %q quarantined by config-hardening scan: %s", f.ServerID, f.Issue)
@@ -3349,11 +3362,22 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		ragEnabled := policy.SkillsRAG.Enabled
 		ragAutoRoute := policy.SkillsRAG.AutoRoute
 		policyLock.RUnlock()
+		skillFindings, skillQuarantine := getSkillAudit()
+		if skillFindings == nil {
+			skillFindings = []SkillFinding{}
+		}
+		if skillQuarantine == nil {
+			skillQuarantine = map[string]string{}
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"rag_enabled":           ragEnabled,
 			"rag_auto_route":        ragAutoRoute,
 			"embedding_in_progress": embeddingInProgress.Load(),
 			"skills":                ListSkills(),
+			"audit": map[string]interface{}{
+				"findings":    skillFindings,
+				"quarantined": skillQuarantine,
+			},
 		})
 
 	// POST /armor/api/skills/toggle — admin enables/disables a skill globally
@@ -3366,6 +3390,10 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			ID string `json:"id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		if reason, quarantined := skillIsQuarantined(body.ID); quarantined {
+			http.Error(w, fmt.Sprintf(`{"error":"skill %q is quarantined by the behavioral-intent scan (%s) — fix the skill content or skill_scanning.patterns and reload the policy before activating it"}`, body.ID, reason), http.StatusForbidden)
+			return
+		}
 		active, ok := ToggleSkill(body.ID)
 		if !ok {
 			http.Error(w, `{"error":"skill not found"}`, http.StatusNotFound)

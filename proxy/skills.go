@@ -356,6 +356,9 @@ func detectSkillSemantic(queryEmb []float64, threshold float64) string {
 		if skill.identityEmbedding == nil {
 			continue
 		}
+		if _, quarantined := skillIsQuarantined(id); quarantined {
+			continue
+		}
 		if score := cosineSimilarity(queryEmb, skill.identityEmbedding); score > bestScore {
 			bestScore = score
 			best = id
@@ -424,10 +427,13 @@ func DetectSkill(header, content string) string {
 	skillsMu.RLock()
 	defer skillsMu.RUnlock()
 
-	// 1. Explicit header — highest priority.
+	// 1. Explicit header — highest priority. Skipped if the skill is
+	// quarantined by the behavioral-intent scan (Phase 2.1).
 	if header != "" {
 		if _, ok := loadedSkills[header]; ok {
-			return header
+			if _, quarantined := skillIsQuarantined(header); !quarantined {
+				return header
+			}
 		}
 	}
 
@@ -437,12 +443,15 @@ func DetectSkill(header, content string) string {
 		if end := strings.Index(rest, "]"); end >= 0 {
 			skillID := strings.TrimSpace(rest[:end])
 			if _, ok := loadedSkills[skillID]; ok {
-				return skillID
+				if _, quarantined := skillIsQuarantined(skillID); !quarantined {
+					return skillID
+				}
 			}
 		}
 	}
 
 	// 3. Keyword auto-detection — pick the skill with the most keyword hits.
+	// Quarantined skills are never candidates.
 	lower := strings.ToLower(content)
 	type match struct {
 		id    string
@@ -450,6 +459,9 @@ func DetectSkill(header, content string) string {
 	}
 	var best match
 	for id, skill := range loadedSkills {
+		if _, quarantined := skillIsQuarantined(id); quarantined {
+			continue
+		}
 		score := 0
 		for _, kw := range skill.Config.Keywords {
 			if strings.Contains(lower, strings.ToLower(kw)) {
@@ -555,6 +567,13 @@ func BuildSkillContext(skillID, query string) string {
 		return ""
 	}
 
+	// Quarantined by the behavioral-intent scan (Phase 2.1) — withhold
+	// content even if the skill was activated before quarantine took effect.
+	if reason, quarantined := skillIsQuarantined(skillID); quarantined {
+		log.Printf("🚫 Skill %q quarantined by behavioral-intent scan (%s) — context withheld", skillID, reason)
+		return ""
+	}
+
 	var sb strings.Builder
 	sb.WriteString(skill.Config.SystemPrompt)
 
@@ -603,14 +622,20 @@ func ListSkills() []map[string]interface{} {
 				embedded++
 			}
 		}
-		out = append(out, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":            s.Config.ID,
 			"name":          s.Config.Name,
 			"description":   s.Config.Description,
 			"docs":          len(s.Docs),
 			"embedded_docs": embedded,
 			"active":        adminActiveSkills[s.Config.ID],
-		})
+			"quarantined":   false,
+		}
+		if reason, quarantined := skillIsQuarantined(s.Config.ID); quarantined {
+			entry["quarantined"] = true
+			entry["quarantine_reason"] = reason
+		}
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i]["id"].(string) < out[j]["id"].(string)

@@ -569,3 +569,60 @@ mcp_servers:
     #       type: basic
     #       username_env: DB_MCP_USER
     #       password_env: DB_MCP_PASS
+
+# ── Intent-Based Skill Scanning (Supply-Chain Defense, Phase 2.1) ────────────
+# Every skill loaded from ./skills/<id>/ (skill.yaml's name/description/
+# keywords/system_prompt, plus knowledge/*.md) is scanned against the patterns
+# below for "dual-vector" toxic-skill indicators — malicious intent can live
+# in the natural-language layer (prompt-injection directives aimed at the
+# orchestrating agent) as well as in embedded shell/code snippets
+# (pipe-to-shell, obfuscated base64 payloads, credential exfiltration).
+#
+# A "critical" finding quarantines the skill when block_critical is true:
+# AgentArmor stops selecting it (header, marker, keyword, and semantic
+# auto-routing all skip it) and withholds its system prompt / knowledge docs,
+# until the skill or the matching pattern is fixed and the policy is reloaded.
+skill_scanning:
+    enabled: true
+    block_critical: true
+    patterns:
+      - id: pipe-to-shell
+        severity: critical
+        enabled: true
+        regex: '(curl|wget)\s+[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|python3?)\b'
+        description: "Downloads remote content and pipes it directly into a shell/interpreter"
+      - id: base64-decode-exec
+        severity: critical
+        enabled: true
+        regex: '(base64\s+(-d|--decode)|atob\()[^\n]{0,80}\|\s*(bash|sh|zsh|python3?)\b'
+        description: "Decodes a base64 payload and executes it — classic obfuscated-payload pattern"
+      - id: credential-file-exfil
+        severity: critical
+        enabled: true
+        regex: '(?i)(~/\.ssh/id_rsa|~/\.aws/credentials|/etc/shadow|\.env\b)[^\n]{0,120}(curl|wget|requests\.(post|put)|urllib|https?://)'
+        description: "References a sensitive credential file alongside an outbound network call — possible credential exfiltration"
+      - id: prompt-override
+        severity: critical
+        enabled: true
+        regex: '(?i)(ignore (all |any )?(previous|prior|above) instructions|disregard (your|the) system prompt|do not (tell|inform|notify) the user)'
+        description: "Embedded prompt-injection / jailbreak directive aimed at the orchestrating agent"
+      - id: destructive-command
+        severity: high
+        enabled: true
+        regex: 'rm\s+-rf\s+(/|\$HOME|~)(\s|$)'
+        description: "Destructive filesystem command"
+      - id: shell-eval
+        severity: high
+        enabled: true
+        regex: '\b(eval|exec)\s*\(|os\.system\s*\(|subprocess\.(Popen|call|run)\([^)]*shell\s*=\s*True'
+        description: "Dynamic code-execution sink"
+      - id: outbound-network-call
+        severity: medium
+        enabled: true
+        regex: '(curl|wget|requests\.(get|post)|urllib\.request)\s+[^\n]*https?://'
+        description: "Outbound network call to a remote host — review the destination"
+      - id: large-base64-blob
+        severity: medium
+        enabled: true
+        regex: '[A-Za-z0-9+/]{200,}={0,2}'
+        description: "Large base64-like blob — review for obfuscated payloads"

@@ -54,6 +54,7 @@ AgentArmor is built around three principles:
 | MCP Credential Brokering | Out | Inject + Block | Registers MCP servers and the tool names they own; resolves `{"tool":...,"args":...}` calls against the registry and injects an AgentArmor-managed credential — agents never hold the real API key; zero-trust scope gate (`mcp:any` / `mcp:<server-id>`) blocks unauthorized tool calls before forwarding |
 | MCP Config-Hardening Scanner | Out | Quarantine | Audits every registered `mcp_servers.servers[]` entry on each policy load for insecure configs — binds to `0.0.0.0`/`::` (NeighborJack-style exposure) or `..` path traversal in the URL are **critical** and auto-quarantine the server, hard-blocking any tool call routed to it regardless of scope; plaintext `http://` to a public host, missing IDs, and broken credential-brokering setups are surfaced as high/medium findings without blocking traffic; full results via `GET /armor/api/mcp/audit` and the MCP Servers dashboard panel |
 | MCP Context Binding | Out | Block | Every brokered MCP credential injection is paired with a short-lived, HMAC-signed `_mcp_context_token` binding the call to the originating session/tenant; if a later tool call arrives carrying a context token (an agent forwarding one to authorize a "chained" call), AgentArmor verifies its signature, expiry, and session/tenant match — blocking unverified task propagation (confused-deputy: Server A autonomously invoking Server B with a stolen/forged context) |
+| MCP Dynamic OAuth2 Brokering | Out | Inject | `auth.type: oauth2` replaces a static `token_env` PAT with short-lived access tokens fetched from the IdP's token endpoint (`client_credentials` or `refresh_token` grant), cached and auto-refreshed per server — AgentArmor injects a fresh narrowly-scoped bearer token on every brokered call instead of a long-lived secret; config-hardening audit validates `token_url`/grant-type requirements and flags plaintext `http://` token endpoints |
 | Scanner Gate | — | Block | Chat and API requests blocked until all enabled scanners are operational; loading page with live status badges |
 | GoalLock Canary | Both | Block | Runtime token injected into every system prompt; any echo = exfiltration proof |
 | Secret Redaction | Both | Redact | API keys, JWTs, tokens — per-rule strategy: **replace / hash / mask / remove** |
@@ -69,6 +70,7 @@ AgentArmor is built around three principles:
 | Rate Limiting | In | Block | Token bucket per session key **and** per client IP — 60 req/min, burst 120; bypassable with `rate_limit:exempt` scope |
 | Auto-Repave Trigger | — | Repave | Fires kill-sessions + canary rotation when event thresholds are crossed |
 | Skills + Semantic RAG | — | Inject | 5 built-in role personas; BM25 or vector embedding retrieval; auto-routes messages to best-matching skill |
+| Skill Behavioral-Intent Scanner | — | Quarantine | Scans every skill's system prompt, keywords, and knowledge docs on each policy load for "dual-vector" toxic-skill indicators — embedded prompt-injection directives aimed at the orchestrating agent, and executable-layer red flags (pipe-to-shell, base64-decode-exec, credential-file exfiltration); **critical** findings auto-quarantine the skill, removing it from header/marker/keyword/semantic detection and withholding its content until the skill or `skill_scanning.patterns` is fixed and the policy is reloaded; full results via `GET /armor/api/skills` and the Skills dashboard tab |
 | SIEM / Webhooks | — | Notify | Multiple destinations: Slack / Splunk HEC / generic JSON; per-destination event filters |
 | Threat Intel Feeds | — | Block | Live regex rules pulled from external URLs, merged in-memory |
 | WebSocket Scanning | Both | All | Scans real-time WS frames, not just HTTP POST bodies |
@@ -298,10 +300,29 @@ mcp_servers:
       url: "https://api.githubcopilot.com/mcp/"
       tools: [github_search, github_create_issue, github_list_prs]
       auth:
-        type: bearer                # bearer | basic | header
+        type: bearer                # bearer | basic | header | oauth2
         header_name: Authorization  # default: Authorization
         token_env: GITHUB_MCP_TOKEN # env var holding the token
         value_prefix: "Bearer "     # default for type: bearer
+
+# Skill behavioral-intent scanning & quarantine (supply-chain defense)
+# Every skill in ./skills/<id>/ (system prompt, keywords, description, and
+# knowledge/*.md) is scanned against these patterns on each policy load.
+# A "critical" finding quarantines the skill when block_critical is true.
+skill_scanning:
+  enabled: true
+  block_critical: true
+  patterns:
+    - id: pipe-to-shell
+      severity: critical
+      enabled: true
+      regex: '(curl|wget)\s+[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|python3?)\b'
+      description: "Downloads remote content and pipes it directly into a shell/interpreter"
+    - id: prompt-override
+      severity: critical
+      enabled: true
+      regex: '(?i)(ignore (all |any )?(previous|prior|above) instructions|disregard (your|the) system prompt|do not (tell|inform|notify) the user)'
+      description: "Embedded prompt-injection / jailbreak directive aimed at the orchestrating agent"
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -335,6 +356,18 @@ Five built-in personas live in `./skills/<id>/` — each has a `skill.yaml` (sys
 **Activation priority:** `X-AgentArmor-Skill` header → `[ARMOR-SKILL:xxx]` marker → keyword match → semantic auto-route → admin-activated global defaults
 
 Admin can activate skills globally from the **Skills tab (05)** in the dashboard — no header needed.
+
+### Skill behavioral-intent scanning & quarantine (Phase 2.1)
+
+Every skill loaded from `./skills/<id>/` — its `skill.yaml` (`name`, `description`, `keywords`, `system_prompt`) plus every `knowledge/*.md` doc — is scanned on each policy load against `skill_scanning.patterns` for "dual-vector" toxic-skill indicators, the pattern described in Snyk's ToxicSkills research: malicious intent can live in the **natural-language layer** (prompt-injection directives embedded in a skill's own instructions, aimed at the orchestrating agent) as well as the **executable-code layer** (shell/code snippets in knowledge docs).
+
+| Severity | Default patterns | Effect |
+|----------|-------------------|--------|
+| **critical** | `pipe-to-shell`, `base64-decode-exec`, `credential-file-exfil`, `prompt-override` | Skill is **quarantined** when `block_critical: true` — `DetectSkill` stops selecting it (header, `[ARMOR-SKILL:xxx]` marker, keyword, and semantic auto-routing all skip it) and `BuildSkillContext` withholds its system prompt and knowledge docs, until the skill or the matching pattern is fixed and the policy is reloaded |
+| **high** | `destructive-command`, `shell-eval` | Surfaced as a finding only — not blocked |
+| **medium** | `outbound-network-call`, `large-base64-blob` | Surfaced as a finding only |
+
+A quarantined skill can't be activated from the dashboard — `POST /armor/api/skills/toggle` returns 403 with the quarantine reason. Full findings and the current quarantine map are available at `GET /armor/api/skills` (`audit.findings` / `audit.quarantined`) and rendered in the Skills tab, including a "QUARANTINED" badge on the affected skill card. All patterns are regexes configurable in `skill_scanning.patterns` — add your own or disable defaults that produce false positives for your skills.
 
 ### Sidecars
 
@@ -790,13 +823,42 @@ mcp_servers:
       url: "https://api.githubcopilot.com/mcp/"
       tools: [github_search, github_create_issue, github_list_prs]
       auth:
-        type: bearer                # bearer | basic | header
+        type: bearer                # bearer | basic | header | oauth2
         header_name: Authorization  # default: Authorization
         token_env: GITHUB_MCP_TOKEN # env var holding the token — never the value itself
         value_prefix: "Bearer "     # default for type: bearer
 ```
 
 Credential values come from environment variables, populated via AgentArmor's secrets vault integration (HashiCorp Vault, AWS/GCP/Azure secret managers), so they never appear in policy.yaml or in the dashboard. AgentArmor stays a single-target reverse proxy — this registry only maps tool names to credential metadata, it doesn't change routing.
+
+### MCP dynamic OAuth2 token brokering (Phase 1.1)
+
+`auth.type: bearer` injects a static, long-lived `token_env` value on every call. `auth.type: oauth2` replaces that with short-lived access tokens that AgentArmor fetches from the IdP's token endpoint on the agent's behalf — narrowly scoped, automatically refreshed, and never written to policy.yaml or held by the agent:
+
+```yaml
+mcp_servers:
+  servers:
+    - id: jira-mcp
+      name: Jira MCP Server
+      url: "https://mcp.internal/jira"
+      tools: [jira_search, jira_create_ticket]
+      auth:
+        type: oauth2
+        token_url: "https://idp.internal/oauth2/token"
+        grant_type: client_credentials   # client_credentials (default) | refresh_token
+        client_id_env: JIRA_MCP_CLIENT_ID
+        client_secret_env: JIRA_MCP_CLIENT_SECRET
+        scope: "jira:read jira:write"    # space-separated OAuth2 scopes
+        header_name: Authorization        # default: Authorization
+        value_prefix: "Bearer "           # default for type: oauth2
+```
+
+Two grants are supported:
+
+- **`client_credentials`** (default) — AgentArmor authenticates to `token_url` as itself using `client_id_env` / `client_secret_env` and is issued a token scoped to the MCP server. No user interaction; the client secret is provisioned once by an admin via the secrets vault.
+- **`refresh_token`** — AgentArmor exchanges a long-lived refresh token (`refresh_token_env`) for short-lived access tokens, refreshing as needed. The refresh token itself is obtained **once**, outside of AgentArmor, via the IdP's own PKCE-protected authorization-code flow — AgentArmor's job starts after that, turning a long-lived refresh token into a stream of short-lived access tokens so the agent and the MCP server never see anything long-lived.
+
+In both cases, fetched tokens are cached per server and reused until they're close to expiry, then transparently refreshed — each brokered tool call gets a valid token without a token-endpoint round trip on every request. The cache is cleared on every policy reload so config or credential changes take effect immediately.
 
 ### MCP configuration-hardening audit & quarantine
 
@@ -805,8 +867,8 @@ Every time the policy is loaded (startup or hot-reload), AgentArmor audits each 
 | Severity | Examples | Effect |
 |----------|----------|--------|
 | **critical** | URL host is `0.0.0.0`/`::` (NeighborJack-style — exposes the server to the entire local network); `..` in the URL path (path traversal) | Server is **quarantined** — `scanPayload`'s MCP zero-trust gate hard-blocks any tool call routed to it, regardless of `require_scope`, until the config is fixed and the policy is reloaded |
-| **high** | `http://` to a non-private host (brokered credentials sent unencrypted); missing `id` (can't be targeted by `mcp:<id>` scopes or quarantined individually) | Surfaced as a finding only — not blocked |
-| **medium** | Missing/incomplete `auth` block for the configured `auth.type` — credential injection will silently be skipped; unknown `auth.type` | Surfaced as a finding only |
+| **high** | `http://` to a non-private host (brokered credentials sent unencrypted); missing `id` (can't be targeted by `mcp:<id>` scopes or quarantined individually); `auth.type: oauth2` with a `token_url` using plaintext `http://` to a non-private host | Surfaced as a finding only — not blocked |
+| **medium** | Missing/incomplete `auth` block for the configured `auth.type` — credential injection will silently be skipped; unknown `auth.type`; `auth.type: oauth2` missing `token_url`, missing the env vars required for its `grant_type`, or an unknown `grant_type` | Surfaced as a finding only |
 | **low** | No `tools` registered; no `url` configured | Informational |
 
 A quarantined server degrades the **MCP Servers** scanner-status badge (never blocks all traffic — consistent with AgentArmor's "single unreachable/misconfigured server only degrades" design). Full findings and the current quarantine map are available at `GET /armor/api/mcp/audit` and rendered in the MCP Servers dashboard panel, including a "QUARANTINED" badge on the affected server entry.
@@ -862,6 +924,8 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 - [x] **MCP Server Registry & Credential Brokering (Zero-Trust MCP, v1)** — register MCP servers and the tools they own; AgentArmor resolves `{"tool":...,"args":...}` calls against the registry and injects a brokered credential (bearer/basic/header) into `args` so agents never hold real MCP server credentials; optional `mcp:any` / `mcp:<server-id>` scope gate blocks unauthorized tool calls before they're forwarded; live reachability badge on the dashboard
 - [x] **MCP Config-Hardening Scanner & Quarantine (Zero-Trust MCP, Phase 1.3)** — every policy load audits `mcp_servers.servers[]` for insecure configs (binds to `0.0.0.0`/`::`, path traversal in URLs, plaintext `http://` to public hosts, broken credential-brokering setups); critical findings auto-quarantine the server, hard-blocking tool calls routed to it; quarantine degrades the MCP Servers status badge; full findings via `GET /armor/api/mcp/audit` and a new dashboard panel
 - [x] **MCP Context Binding (Zero-Trust MCP, Phase 1.2)** — every brokered credential injection mints a short-lived, HMAC-signed `_mcp_context_token` binding the call to its session/tenant; a later tool call carrying a context token (e.g. forwarded by the agent to authorize a chained call) must verify for the same session or is hard-blocked as unverified task propagation — closes the "confused deputy" gap where Server A's response could trick the agent into invoking Server B with a stolen context
+- [x] **MCP Dynamic OAuth2 Token Brokering (Zero-Trust MCP, Phase 1.1)** — `auth.type: oauth2` fetches short-lived access tokens from the IdP's token endpoint (`client_credentials` or `refresh_token` grant) instead of injecting a static `token_env` PAT; tokens are cached per server and auto-refreshed via `golang.org/x/oauth2`, with the cache cleared on every policy reload; config-hardening audit validates `token_url` and grant-type-specific env vars and flags plaintext `http://` token endpoints
+- [x] **Skill Behavioral-Intent Scanner & Quarantine (Supply-Chain Defense, Phase 2.1)** — every policy load scans each skill's system prompt, keywords, description, and knowledge docs for "dual-vector" toxic-skill indicators (embedded prompt-injection directives, pipe-to-shell, base64-decode-exec, credential-file exfiltration, destructive commands); critical findings auto-quarantine the skill — removed from header/marker/keyword/semantic detection and its content withheld until fixed and the policy is reloaded; findings via `GET /armor/api/skills` and a new Skills-tab audit panel with quarantine badges
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

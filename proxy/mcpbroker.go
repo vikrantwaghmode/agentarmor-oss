@@ -20,6 +20,7 @@ package main
 // server — sessions without it are blocked before the call is forwarded.
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -33,6 +34,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 // ─── Policy section ───────────────────────────────────────────────────────────
@@ -59,13 +63,27 @@ type MCPServer struct {
 // routed to this server. Only the names of environment variables holding
 // secret values are stored in policy — never the secrets themselves.
 type MCPAuth struct {
-	Type        string `yaml:"type" json:"type"` // bearer | basic | header
+	Type        string `yaml:"type" json:"type"` // bearer | basic | header | oauth2
 	HeaderName  string `yaml:"header_name" json:"header_name"`
 	TokenEnv    string `yaml:"token_env" json:"token_env"`
 	UsernameEnv string `yaml:"username_env" json:"username_env"`
 	PasswordEnv string `yaml:"password_env" json:"password_env"`
 	ValueEnv    string `yaml:"value_env" json:"value_env"`
 	ValuePrefix string `yaml:"value_prefix" json:"value_prefix"`
+
+	// oauth2 — dynamic token brokering (Phase 1.1). AgentArmor fetches
+	// short-lived access tokens from TokenURL on the agent's behalf instead
+	// of injecting a long-lived static token_env value. The long-lived
+	// client_secret / refresh_token themselves are obtained once via the
+	// IdP's own (PKCE-protected) authorization flow and stored as env-var
+	// secrets — AgentArmor's job is to turn those into fresh, narrowly-scoped
+	// bearer tokens on every brokered call, never to hold a long-lived PAT.
+	TokenURL        string `yaml:"token_url" json:"token_url"`
+	GrantType       string `yaml:"grant_type" json:"grant_type"` // client_credentials (default) | refresh_token
+	ClientIDEnv     string `yaml:"client_id_env" json:"client_id_env"`
+	ClientSecretEnv string `yaml:"client_secret_env" json:"client_secret_env"`
+	RefreshTokenEnv string `yaml:"refresh_token_env" json:"refresh_token_env"`
+	Scope           string `yaml:"scope" json:"scope"` // space-separated OAuth2 scopes
 }
 
 // ─── lookup & scope ───────────────────────────────────────────────────────────
@@ -92,9 +110,11 @@ func sessionHasMCPAccess(tnt *Tenant, sessionKey, serverID string) bool {
 
 // resolveMCPCredential turns an MCPAuth block into an HTTP header name/value
 // pair, reading secret values from the process environment. Returns
-// ok=false if the referenced env var(s) aren't set, so callers can skip
-// injection rather than attach an empty credential.
-func resolveMCPCredential(auth MCPAuth) (headerName, headerValue string, ok bool) {
+// ok=false if the referenced env var(s) aren't set (or, for oauth2, if the
+// token endpoint can't be reached), so callers can skip injection rather
+// than attach an empty credential. serverID is used to cache oauth2 token
+// sources across calls.
+func resolveMCPCredential(serverID string, auth MCPAuth) (headerName, headerValue string, ok bool) {
 	switch strings.ToLower(auth.Type) {
 	case "bearer":
 		token := os.Getenv(auth.TokenEnv)
@@ -132,8 +152,132 @@ func resolveMCPCredential(auth MCPAuth) (headerName, headerValue string, ok bool
 			return "", "", false
 		}
 		return auth.HeaderName, auth.ValuePrefix + val, true
+
+	case "oauth2":
+		token, err := resolveOAuth2Token(serverID, auth)
+		if err != nil {
+			return "", "", false
+		}
+		name := auth.HeaderName
+		if name == "" {
+			name = "Authorization"
+		}
+		prefix := auth.ValuePrefix
+		if prefix == "" {
+			prefix = "Bearer "
+		}
+		return name, prefix + token, true
 	}
 	return "", "", false
+}
+
+// ─── oauth2 dynamic token brokering ─────────────────────────────────────────
+//
+// Phase 1.1 of zero-trust MCP brokering: instead of injecting a static,
+// long-lived token_env value, AgentArmor fetches short-lived access tokens
+// from the configured IdP token endpoint and caches a per-server token
+// source so each MCP-bound tool call gets a fresh (or cached-but-unexpired)
+// bearer token, automatically refreshed via the oauth2 library's built-in
+// reuse/refresh logic.
+//
+// Two grants are supported:
+//
+//   - client_credentials — AgentArmor authenticates as itself (client_id +
+//     client_secret) and is issued a token scoped to the MCP server. No user
+//     interaction; the client secret was provisioned once by an admin.
+//
+//   - refresh_token — AgentArmor exchanges a long-lived refresh token (itself
+//     obtained once via the IdP's PKCE-protected authorization-code flow,
+//     outside of AgentArmor) for short-lived access tokens, refreshing as
+//     needed.
+//
+// In both cases the only thing AgentArmor ever injects into a tool call is a
+// short-lived access token — never the client secret or refresh token.
+
+var (
+	mcpOAuthMu      sync.Mutex
+	mcpOAuthSources = map[string]oauth2.TokenSource{}
+)
+
+// resetMCPOAuthSources clears the cached oauth2 token sources. Called on
+// every policy (re)load so that changes to a server's auth config or its
+// referenced env vars take effect immediately rather than reusing a token
+// source built from stale settings.
+func resetMCPOAuthSources() {
+	mcpOAuthMu.Lock()
+	mcpOAuthSources = map[string]oauth2.TokenSource{}
+	mcpOAuthMu.Unlock()
+}
+
+// resolveOAuth2Token returns a valid access token for serverID, fetching (or
+// refreshing) one from auth.TokenURL as needed. The underlying token source
+// is cached per server so repeated calls reuse a still-valid token instead
+// of round-tripping to the IdP every time.
+func resolveOAuth2Token(serverID string, auth MCPAuth) (string, error) {
+	if auth.TokenURL == "" {
+		return "", fmt.Errorf("oauth2 auth.token_url is not configured")
+	}
+
+	mcpOAuthMu.Lock()
+	src, ok := mcpOAuthSources[serverID]
+	if !ok {
+		var err error
+		src, err = newMCPOAuthTokenSource(auth)
+		if err != nil {
+			mcpOAuthMu.Unlock()
+			return "", err
+		}
+		mcpOAuthSources[serverID] = src
+	}
+	mcpOAuthMu.Unlock()
+
+	tok, err := src.Token()
+	if err != nil {
+		return "", fmt.Errorf("fetch oauth2 token: %w", err)
+	}
+	return tok.AccessToken, nil
+}
+
+// newMCPOAuthTokenSource builds the oauth2.TokenSource for auth's grant
+// type. Both branches return sources that cache and auto-refresh internally
+// (clientcredentials.Config.TokenSource and oauth2.Config.TokenSource each
+// wrap an oauth2.ReuseTokenSource).
+func newMCPOAuthTokenSource(auth MCPAuth) (oauth2.TokenSource, error) {
+	clientID := os.Getenv(auth.ClientIDEnv)
+	clientSecret := os.Getenv(auth.ClientSecretEnv)
+	var scopes []string
+	if auth.Scope != "" {
+		scopes = strings.Fields(auth.Scope)
+	}
+
+	switch strings.ToLower(auth.GrantType) {
+	case "", "client_credentials":
+		if clientID == "" {
+			return nil, fmt.Errorf("oauth2 grant_type=client_credentials requires client_id_env to resolve to a non-empty value")
+		}
+		cc := &clientcredentials.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			TokenURL:     auth.TokenURL,
+			Scopes:       scopes,
+		}
+		return cc.TokenSource(context.Background()), nil
+
+	case "refresh_token":
+		refreshToken := os.Getenv(auth.RefreshTokenEnv)
+		if refreshToken == "" {
+			return nil, fmt.Errorf("oauth2 grant_type=refresh_token requires refresh_token_env to resolve to a non-empty value")
+		}
+		cfg := &oauth2.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			Endpoint:     oauth2.Endpoint{TokenURL: auth.TokenURL},
+			Scopes:       scopes,
+		}
+		return cfg.TokenSource(context.Background(), &oauth2.Token{RefreshToken: refreshToken}), nil
+	}
+
+	return nil, fmt.Errorf("unknown oauth2 grant_type %q", auth.GrantType)
 }
 
 // ─── reachability probe (scanner status) ───────────────────────────────────────
@@ -201,7 +345,7 @@ type mcpToolCallEnvelope struct {
 // (env var unset) or the envelope can't be re-marshalled. contextToken is
 // omitted from args if empty.
 func buildMCPInjectedToolCall(tool string, args json.RawMessage, server *MCPServer, contextToken string) (string, bool) {
-	headerName, headerValue, ok := resolveMCPCredential(server.Auth)
+	headerName, headerValue, ok := resolveMCPCredential(server.ID, server.Auth)
 	if !ok {
 		return "", false
 	}
@@ -295,10 +439,30 @@ func auditMCPServerConfig(s MCPServer) []MCPServerFinding {
 		if s.Auth.HeaderName == "" || s.Auth.ValueEnv == "" {
 			add("medium", "auth.type=header requires header_name and value_env — credential injection will always be skipped")
 		}
+	case "oauth2":
+		if s.Auth.TokenURL == "" {
+			add("medium", "auth.type=oauth2 but token_url is not set — credential injection will always be skipped")
+		} else if u, err := url.Parse(s.Auth.TokenURL); err != nil {
+			add("medium", "auth.token_url %q could not be parsed: %v", s.Auth.TokenURL, err)
+		} else if u.Scheme == "http" && !isLoopbackOrPrivateHost(u.Hostname()) {
+			add("high", "auth.token_url uses plaintext http:// to a non-private host (%s) — token requests would be sent unencrypted", u.Hostname())
+		}
+		switch strings.ToLower(s.Auth.GrantType) {
+		case "", "client_credentials":
+			if s.Auth.ClientIDEnv == "" {
+				add("medium", "auth.type=oauth2 with grant_type=client_credentials requires client_id_env — credential injection will always be skipped")
+			}
+		case "refresh_token":
+			if s.Auth.RefreshTokenEnv == "" {
+				add("medium", "auth.type=oauth2 with grant_type=refresh_token requires refresh_token_env — credential injection will always be skipped")
+			}
+		default:
+			add("medium", "auth.type=oauth2 has unknown grant_type %q — must be client_credentials or refresh_token", s.Auth.GrantType)
+		}
 	case "":
 		add("medium", "no auth configured — tool calls to this server's tools are forwarded without a brokered credential")
 	default:
-		add("medium", "unknown auth.type %q — must be bearer, basic, or header", s.Auth.Type)
+		add("medium", "unknown auth.type %q — must be bearer, basic, header, or oauth2", s.Auth.Type)
 	}
 
 	return findings
