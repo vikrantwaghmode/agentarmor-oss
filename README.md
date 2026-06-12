@@ -428,6 +428,8 @@ agentarmor-oss/
 │   ├── docconv.go       # Document conversion — PDF/Word/Excel/PowerPoint uploads → Markdown via doc2md, scanned before forwarding
 │   ├── mcpbroker.go     # MCP server registry — credential brokering for {"tool":...,"args":...} calls, zero-trust scope gate
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
+│   ├── skillscan.go     # Skill behavioral-intent scanner & quarantine (Phase 2.1)
+│   ├── execscan.go      # Execution containment scanner — exec tool-call args (Phase 3.1)
 │   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
 │   ├── tokens.go        # Agent token issuance, ABAC scopes, spawn-chain
 │   ├── usersession.go   # Browser session management (OIDC + token auth)
