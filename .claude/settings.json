@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/mnt/1TB Projects/AI Experiments/agentarmor-oss/proxy\" && go build -o /tmp/agentarmor-proxy-test ./main.go ./skills.go ./skillscan.go ./execscan.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go ./docconv.go ./mcpbroker.go && echo \"BUILD OK\" && rm -f /tmp/agentarmor-proxy-test)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}
