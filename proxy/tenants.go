@@ -379,14 +379,19 @@ func (t *Tenant) checkRL(key string) bool {
 
 // ── Tool approvals ──
 
-func (t *Tenant) requestApproval(sessionKey, tool string) string {
+// requestApproval queues a per-tenant approval request. fingerprint and issue
+// mirror the global requestToolApproval (Phase 4.1): when set (the call
+// targeted a data_sensitivity-matched resource) the grant is scoped to
+// "this tool against this target" and deduped on the triple rather than
+// (session, tool). Empty for non-sensitive high-risk calls.
+func (t *Tenant) requestApproval(sessionKey, tool, fingerprint, issue string) string {
 	if t.IsDefault {
-		return requestToolApproval(sessionKey, tool)
+		return requestToolApproval(sessionKey, tool, fingerprint, issue)
 	}
 	t.approvalsLock.Lock()
 	defer t.approvalsLock.Unlock()
 	for id, req := range t.approvals {
-		if req.SessionKey == sessionKey && req.Tool == tool && req.Status == "pending" {
+		if req.SessionKey == sessionKey && req.Tool == tool && req.TargetFingerprint == fingerprint && req.Status == "pending" {
 			return id
 		}
 	}
@@ -397,12 +402,14 @@ func (t *Tenant) requestApproval(sessionKey, tool string) string {
 	t.approvalsSeq++
 	id := fmt.Sprintf("%x", time.Now().UnixNano())[:12]
 	t.approvals[id] = &ToolApprovalRequest{
-		ID:          id,
-		SessionKey:  sessionKey,
-		DisplayKey:  display,
-		Tool:        tool,
-		RequestedAt: time.Now().Format(time.RFC3339),
-		Status:      "pending",
+		ID:                id,
+		SessionKey:        sessionKey,
+		DisplayKey:        display,
+		Tool:              tool,
+		TargetFingerprint: fingerprint,
+		SensitivityIssue:  issue,
+		RequestedAt:       time.Now().Format(time.RFC3339),
+		Status:            "pending",
 	}
 	go t.addAlert("TOOL_APPROVAL_REQUIRED",
 		fmt.Sprintf("[%s] Session %s requests approval for '%s'", t.Meta.ID, display, tool))

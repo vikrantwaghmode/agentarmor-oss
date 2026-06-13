@@ -666,3 +666,35 @@ execution_scanning:
         enabled: true
         regex: '(curl|wget)\s+[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|python3?)\b'
         description: "Downloads remote content and pipes it directly into a shell/interpreter"
+
+# Data-Sensitivity-Aware Governed Execution Grants (Phase 4.1).
+# Classifies the args of a high-risk tool call against these patterns. When a
+# call targets a sensitive resource, its Zero-Trust approval is scoped to
+# "this tool against THIS target" (a SHA-256 fingerprint of the args) and
+# expires after grant_ttl_minutes — instead of "approve this tool once, then
+# every call for the rest of the session is allowed". Non-matching calls keep
+# the original per-(session,tool) approval behavior.
+data_sensitivity:
+    enabled: true
+    grant_ttl_minutes: 10   # 0 = grants for matched targets never expire (closest to legacy behavior)
+    patterns:
+      - id: credential-files
+        severity: critical
+        enabled: true
+        regex: '(?i)(/etc/shadow|/etc/passwd|/etc/sudoers|~?/\.ssh/id_rsa|~?/\.aws/credentials|~?/\.aws/config|\.env\b)'
+        description: "Target is a credential, key, or secrets file"
+      - id: production-resource
+        severity: high
+        enabled: true
+        regex: '(?i)\b(prod|production)[-_](db|database|env|environment|server|cluster|bucket|table|deploy(ment)?|config)\b|\b(db|database|server|cluster|bucket|table)[-_](prod|production)\b'
+        description: "Target references a production resource by name"
+      - id: destructive-sql
+        severity: high
+        enabled: true
+        regex: '(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b'
+        description: "Target involves a destructive SQL statement (DROP/TRUNCATE/DELETE)"
+      - id: sensitive-system-paths
+        severity: medium
+        enabled: true
+        regex: '(?i)(^|["''\s])(/etc|/root|/boot|/var/lib|/sys|/proc)(/|["''\s]|$)'
+        description: "Target is a sensitive system directory"

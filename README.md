@@ -67,6 +67,7 @@ AgentArmor is built around three principles:
 | Intent Scoring | In | Block | Stateful tool-call sequences per session (`read_file → post_request` etc.) |
 | Anomaly Scoring | In | Block/Alert | 3-signal behavioural scorer (0–1); configurable alert + block thresholds |
 | Zero-Trust Tool Approval | In | Block | `exec`, `browser`, `sessions_spawn` blocked until admin approves per-session; bypassable with `tool:exec` / `tool:any` scope |
+| Data-Sensitivity Execution Grants | In | Approval-gate | Classifies a high-risk tool call's `args` against `data_sensitivity.patterns` (credential files, production resources, destructive SQL, sensitive system paths); a match narrows the Zero-Trust approval from "this tool, forever this session" to "this tool against *this* target" (a SHA-256 fingerprint of the args) and expires the grant after `grant_ttl_minutes` |
 | Blast Radius Cap | In | Block | Hard limits on tool calls, blocks, high-risk calls per session; bypassable with `blast_radius:exempt` scope for orchestrators |
 | Rate Limiting | In | Block | Token bucket per session key **and** per client IP — 60 req/min, burst 120; bypassable with `rate_limit:exempt` scope |
 | Auto-Repave Trigger | — | Repave | Fires kill-sessions + canary rotation when event thresholds are crossed |
@@ -349,6 +350,30 @@ execution_scanning:
       enabled: true
       regex: '(?i)(iptables\s+(-F|-X|--flush)|ip6tables\s+(-F|-X|--flush)|agentarmor-firewall)'
       description: "Attempts to flush or disable AgentArmor's egress firewall"
+
+# Data-Sensitivity-Aware Execution Grants (proxy-realistic "governed execution")
+# Classifies a high-risk tool call's args; a match scopes the Zero-Trust
+# approval to "this tool against THIS target" (sha256 of args) and expires it
+# after grant_ttl_minutes — instead of "approve the tool once for the session".
+data_sensitivity:
+  enabled: true
+  grant_ttl_minutes: 10              # 0 = grants for matched targets never expire
+  patterns:
+    - id: credential-files
+      severity: critical
+      enabled: true
+      regex: '(?i)(/etc/shadow|/etc/passwd|/etc/sudoers|~?/\.ssh/id_rsa|~?/\.aws/credentials|~?/\.aws/config|\.env\b)'
+      description: "Target is a credential, key, or secrets file"
+    - id: production-resource
+      severity: high
+      enabled: true
+      regex: '(?i)\b(prod|production)[-_](db|database|env|server|cluster|bucket|table)\b'
+      description: "Target references a production resource by name"
+    - id: destructive-sql
+      severity: high
+      enabled: true
+      regex: '(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b'
+      description: "Target involves a destructive SQL statement"
 ```
 
 ### `firewall.yaml` — egress allow-list
@@ -409,6 +434,25 @@ Every `{"tool":"...","args":{...}}` call whose tool name appears in `execution_s
 
 Zero-Trust Tool Approval answers "is this session allowed to call `exec` at all?"; the Execution Containment Scanner answers "is *this specific command* one that should never run, no matter who's asking?" — critical patterns (mounting `/proc/1/root`, `rm -rf /`, flushing AgentArmor's own egress `iptables` chain) have no legitimate use for an AI agent, so there's deliberately no `allow_scopes` bypass for them. All patterns are regexes configurable in `execution_scanning.patterns`; findings appear in the Audit Log tab and the Alerts ticker via the existing `logAuditEvent`/`addAlert` plumbing.
 
+### Data-sensitivity-aware execution grants (Phase 4.1)
+
+> **Honest scoping note:** the original roadmap for "Phase 4: Dynamic Governed Execution" described a Governed Execution Engine that builds a Program Dependency Graph and uses a static Type System to detect when an agent deviates from a mathematically-defined execution grant, killing the thread mid-run. That PDG / type-system machinery belongs to a *different, academic* "AgentArmor" (a Python/FastAPI research project) — none of it exists in this Go reverse proxy, and a JSON-level proxy can't construct a program dependency graph of code it never executes. What follows is the proxy-realistic equivalent: binding an approval grant to the *specific target* a tool call touches, with a time-boxed expiry.
+
+Plain Zero-Trust Tool Approval is per *(session, tool)*: once an admin approves `exec` once, every subsequent `exec` call in that session is allowed — regardless of whether it's listing a temp directory or reading `/etc/shadow`. Phase 4.1 closes that gap (the report's "DELETE a temp file vs. DELETE a production table" example). When `data_sensitivity.enabled` is true, a high-risk tool call's raw `args` JSON is classified against `data_sensitivity.patterns`:
+
+| Severity | Default patterns | What it catches |
+|----------|-------------------|-----------------|
+| **critical** | `credential-files` | `/etc/shadow`, `/etc/passwd`, `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env` |
+| **high** | `production-resource`, `destructive-sql` | `prod-database`, `production_bucket`; `DROP TABLE` / `TRUNCATE` / `DELETE FROM` |
+| **medium** | `sensitive-system-paths` | `/etc`, `/root`, `/boot`, `/var/lib`, `/sys`, `/proc` |
+
+On a match, the approval is keyed to `tool|<sha256(args)[:12]>` rather than just the tool name, so:
+
+- Approving `exec` against `/etc/shadow` does **not** auto-approve a later `exec` against `~/.aws/credentials` — each distinct sensitive target raises its own approval request (shown with its target fingerprint and the matched-pattern reason in the Repave tab's approval table).
+- The grant expires after `grant_ttl_minutes` (default 10; set `0` to never expire), so a long-lived session can't hold an open-ended grant to touch a sensitive resource — re-running the same sensitive call after expiry re-prompts.
+
+Non-sensitive calls (no pattern match) keep the original per-*(session, tool)* behavior exactly, and with `data_sensitivity.enabled: false` the feature is a complete no-op. This is the realistic stand-in for the report's "short-lived cryptographic grant bound to this specific operational moment" — re-prompting on target change plus timed expiry, enforced at the JSON layer the proxy actually sees.
+
 ### Sidecars
 
 | Service | Purpose | Setup |
@@ -430,6 +474,7 @@ agentarmor-oss/
 │   ├── skills.go        # Skill loader, BM25 + semantic RAG, auto-routing
 │   ├── skillscan.go     # Skill behavioral-intent scanner & quarantine (Phase 2.1)
 │   ├── execscan.go      # Execution containment scanner — exec tool-call args (Phase 3.1)
+│   ├── datasensitivity.go # Data-sensitivity classification — target-scoped, time-boxed Zero-Trust grants (Phase 4.1)
 │   ├── oidc.go          # SSO/OIDC — provider init, login/callback/logout handlers
 │   ├── tokens.go        # Agent token issuance, ABAC scopes, spawn-chain
 │   ├── usersession.go   # Browser session management (OIDC + token auth)
@@ -969,6 +1014,7 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 - [x] **MCP Dynamic OAuth2 Token Brokering (Zero-Trust MCP, Phase 1.1)** — `auth.type: oauth2` fetches short-lived access tokens from the IdP's token endpoint (`client_credentials` or `refresh_token` grant) instead of injecting a static `token_env` PAT; tokens are cached per server and auto-refreshed via `golang.org/x/oauth2`, with the cache cleared on every policy reload; config-hardening audit validates `token_url` and grant-type-specific env vars and flags plaintext `http://` token endpoints
 - [x] **Skill Behavioral-Intent Scanner & Quarantine (Supply-Chain Defense, Phase 2.1)** — every policy load scans each skill's system prompt, keywords, description, and knowledge docs for "dual-vector" toxic-skill indicators (embedded prompt-injection directives, pipe-to-shell, base64-decode-exec, credential-file exfiltration, destructive commands); critical findings auto-quarantine the skill — removed from header/marker/keyword/semantic detection and its content withheld until fixed and the policy is reloaded; findings via `GET /armor/api/skills` and a new Skills-tab audit panel with quarantine badges
 - [x] **Execution Containment Scanner (Phase 3.1)** — scans the `args` of configured tool calls (default: `exec`) for container-escape, destructive-filesystem, and firewall-tamper patterns; critical findings hard-block the call (`EXEC_BLOCK`) even for sessions holding Zero-Trust `tool:exec` approval — closing the "may run exec at all" vs "may run *this* command" gap; high/medium findings (credential-file access, path traversal, privilege escalation, pipe-to-shell) raise `EXEC_ALERT` without blocking; configurable via `execution_scanning.patterns`
+- [x] **Data-Sensitivity-Aware Execution Grants (Phase 4.1)** — classifies a high-risk tool call's `args` against `data_sensitivity.patterns` (credential files, production resources, destructive SQL, sensitive system paths); a match narrows the Zero-Trust approval from per-*(session, tool)* to per-*(session, tool, target fingerprint)* and time-boxes it via `grant_ttl_minutes` — so approving `exec` against a temp file never silently blesses a later `exec` against `/etc/shadow`, and grants to sensitive targets expire; the proxy-realistic stand-in for "Governed Execution" (no PDG/type-system, which belong to a different project); approval requests show target fingerprint + matched-pattern reason in the Repave tab
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring

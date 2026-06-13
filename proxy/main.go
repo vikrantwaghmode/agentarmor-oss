@@ -206,6 +206,7 @@ type Config struct {
 	MCPServers        MCPServersConfig        `yaml:"mcp_servers" json:"mcp_servers"`
 	SkillScanning     SkillScanningConfig     `yaml:"skill_scanning" json:"skill_scanning"`
 	ExecutionScanning ExecutionScanningConfig `yaml:"execution_scanning" json:"execution_scanning"`
+	DataSensitivity   DataSensitivityConfig   `yaml:"data_sensitivity" json:"data_sensitivity"`
 }
 
 // AgentRoutingConfig controls which agents may spawn child tokens for downstream agents.
@@ -254,6 +255,7 @@ var compiledMaliciousRegexes []*regexp.Regexp
 var compiledInternalIPRegexes []*regexp.Regexp
 var compiledCanaryRegexes []*regexp.Regexp
 var compiledExecRegexes []*regexp.Regexp
+var compiledSensitivityRegexes []*regexp.Regexp
 var policyLock sync.RWMutex
 
 // ScannerRuleCounts holds the number of enabled rules for each scanner and firewall
@@ -364,9 +366,13 @@ type AgentEvent struct {
 }
 
 type SessionState struct {
-	Events            []AgentEvent
-	ToolCounts        map[string]int
-	ApprovedTools     map[string]bool
+	Events     []AgentEvent
+	ToolCounts map[string]int
+	// ApprovedTools maps an approval key (the tool name, or "tool|targetFingerprint"
+	// for sensitive targets — see classifySensitivity) to the time the grant
+	// was issued. Sensitive-target grants expire after
+	// data_sensitivity.grant_ttl_minutes; plain tool-level grants never expire.
+	ApprovedTools     map[string]time.Time
 	DeniedTools       map[string]bool
 	TotalToolCalls    int
 	TotalBlocks       int
@@ -471,12 +477,18 @@ func killSession(key string) {
 // ──────────────────────────────────────────────
 
 type ToolApprovalRequest struct {
-	ID          string `json:"id"`
-	SessionKey  string `json:"-"`           // full key, not sent to dashboard
-	DisplayKey  string `json:"session_key"` // truncated for display
-	Tool        string `json:"tool"`
-	RequestedAt string `json:"requested_at"`
-	Status      string `json:"status"` // pending | approved | denied
+	ID         string `json:"id"`
+	SessionKey string `json:"-"`           // full key, not sent to dashboard
+	DisplayKey string `json:"session_key"` // truncated for display
+	Tool       string `json:"tool"`
+	// TargetFingerprint and SensitivityIssue are set (Phase 4.1) when this
+	// tool call's args matched a data_sensitivity pattern — the resulting
+	// grant is scoped to "this tool against this target" rather than "this
+	// tool, forever this session". Empty for non-sensitive high-risk calls.
+	TargetFingerprint string `json:"target_fingerprint,omitempty"`
+	SensitivityIssue  string `json:"sensitivity_issue,omitempty"`
+	RequestedAt       string `json:"requested_at"`
+	Status            string `json:"status"` // pending | approved | denied
 }
 
 var (
@@ -495,13 +507,25 @@ func isHighRiskTool(tool string) bool {
 	return false
 }
 
+// toolApprovalKey returns the SessionState.ApprovedTools/DeniedTools key for
+// a tool call: just the tool name, or "tool|fingerprint" when the call
+// targets a sensitive resource (Phase 4.1).
+func toolApprovalKey(tool, fingerprint string) string {
+	if fingerprint == "" {
+		return tool
+	}
+	return tool + "|" + fingerprint
+}
+
 // requestToolApproval queues an approval request and returns its ID.
-// If a pending request already exists for this session+tool, returns the existing ID.
-func requestToolApproval(sessionKey, tool string) string {
+// If a pending request already exists for this session+tool+fingerprint,
+// returns the existing ID. fingerprint and issue are empty for non-sensitive
+// high-risk calls (Phase 4.1).
+func requestToolApproval(sessionKey, tool, fingerprint, issue string) string {
 	toolApprovalsLock.Lock()
 	defer toolApprovalsLock.Unlock()
 	for id, req := range toolApprovals {
-		if req.SessionKey == sessionKey && req.Tool == tool && req.Status == "pending" {
+		if req.SessionKey == sessionKey && req.Tool == tool && req.TargetFingerprint == fingerprint && req.Status == "pending" {
 			return id
 		}
 	}
@@ -511,20 +535,27 @@ func requestToolApproval(sessionKey, tool string) string {
 	}
 	id := fmt.Sprintf("%x", time.Now().UnixNano())[:12]
 	toolApprovals[id] = &ToolApprovalRequest{
-		ID:          id,
-		SessionKey:  sessionKey,
-		DisplayKey:  display,
-		Tool:        tool,
-		RequestedAt: time.Now().Format(time.RFC3339),
-		Status:      "pending",
+		ID:                id,
+		SessionKey:        sessionKey,
+		DisplayKey:        display,
+		Tool:              tool,
+		TargetFingerprint: fingerprint,
+		SensitivityIssue:  issue,
+		RequestedAt:       time.Now().Format(time.RFC3339),
+		Status:            "pending",
 	}
-	log.Printf("🔐 Zero-trust: approval required for tool '%s' (session %s, id=%s)", tool, display, id)
+	if fingerprint != "" {
+		log.Printf("🔐 Zero-trust: approval required for tool '%s' against sensitive target %s (session %s, id=%s): %s", tool, fingerprint, display, id, issue)
+	} else {
+		log.Printf("🔐 Zero-trust: approval required for tool '%s' (session %s, id=%s)", tool, display, id)
+	}
 	go addAlert("TOOL_APPROVAL_REQUIRED",
 		fmt.Sprintf("Session %s requests approval for high-risk tool '%s' — approve in the Repave tab", display, tool))
 	return id
 }
 
-// approveToolRequest marks a request approved and adds the tool to the session's allowed set.
+// approveToolRequest marks a request approved and adds the tool (or
+// tool+target, for sensitive-target grants) to the session's allowed set.
 func approveToolRequest(id string) bool {
 	toolApprovalsLock.Lock()
 	req, ok := toolApprovals[id]
@@ -534,22 +565,24 @@ func approveToolRequest(id string) bool {
 	}
 	req.Status = "approved"
 	sessionKey := req.SessionKey
+	key := toolApprovalKey(req.Tool, req.TargetFingerprint)
 	tool := req.Tool
 	toolApprovalsLock.Unlock()
 
 	sessionHistoryLock.Lock()
 	if state, ok := sessionHistory[sessionKey]; ok {
 		if state.ApprovedTools == nil {
-			state.ApprovedTools = make(map[string]bool)
+			state.ApprovedTools = make(map[string]time.Time)
 		}
-		state.ApprovedTools[tool] = true
+		state.ApprovedTools[key] = time.Now()
 	}
 	sessionHistoryLock.Unlock()
 	log.Printf("✅ Zero-trust: approved tool '%s' for session", tool)
 	return true
 }
 
-// denyToolRequest marks a request denied and adds the tool to the session's denied set.
+// denyToolRequest marks a request denied and adds the tool (or tool+target,
+// for sensitive-target grants) to the session's denied set.
 func denyToolRequest(id string) bool {
 	toolApprovalsLock.Lock()
 	req, ok := toolApprovals[id]
@@ -559,6 +592,7 @@ func denyToolRequest(id string) bool {
 	}
 	req.Status = "denied"
 	sessionKey := req.SessionKey
+	key := toolApprovalKey(req.Tool, req.TargetFingerprint)
 	tool := req.Tool
 	toolApprovalsLock.Unlock()
 
@@ -567,7 +601,7 @@ func denyToolRequest(id string) bool {
 		if state.DeniedTools == nil {
 			state.DeniedTools = make(map[string]bool)
 		}
-		state.DeniedTools[tool] = true
+		state.DeniedTools[key] = true
 	}
 	sessionHistoryLock.Unlock()
 	log.Printf("🚫 Zero-trust: denied tool '%s' for session", tool)
@@ -1614,6 +1648,14 @@ func loadPolicy() {
 		newExecRegexes = append(newExecRegexes, rx)
 	}
 
+	// Compile Data Sensitivity patterns (Phase 4.1) — index-aligned with
+	// newPolicy.DataSensitivity.Patterns, same convention as above.
+	var newSensitivityRegexes []*regexp.Regexp
+	for _, rule := range newPolicy.DataSensitivity.Patterns {
+		rx, _ := compileRegex(rule.Regex)
+		newSensitivityRegexes = append(newSensitivityRegexes, rx)
+	}
+
 	// Set Rate Limit RPM for dashboard stats
 	if newPolicy.Scanners.RateLimiting.Enabled {
 		currentRuleCounts.RateLimitRpm = newPolicy.Scanners.RateLimiting.RequestsPerMinute
@@ -1642,6 +1684,7 @@ func loadPolicy() {
 	compiledInternalIPRegexes = newInternalIPRegexes
 	compiledCanaryRegexes = newCanaryRegexes
 	compiledExecRegexes = newExecRegexes
+	compiledSensitivityRegexes = newSensitivityRegexes
 	globalRuleCounts = currentRuleCounts // Store the calculated counts
 	policyLock.Unlock()
 
@@ -2598,18 +2641,41 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 				(toolCall.Tool == "browser" && sessionHasAnyScope(tnt, sessionKey, []string{ScopeToolBrowser}))
 
 			if policy.Scanners.ZeroTrustTools.Enabled && highRisk && !toolScopeBypass {
+				// --- Data Sensitivity Classification (Phase 4.1) ---
+				// If this call's args target a sensitive resource (credential
+				// file, production resource, destructive SQL, sensitive
+				// system path), scope the approval to "this tool against
+				// THIS target" instead of "this tool, forever this session",
+				// and expire the grant after grant_ttl_minutes.
+				var sensFinding *SensitivityFinding
+				if policy.DataSensitivity.Enabled {
+					sensFinding = classifySensitivity(toolCall.Args, compiledSensitivityRegexes, policy.DataSensitivity.Patterns)
+				}
+				fingerprint := ""
+				if sensFinding != nil {
+					fingerprint = targetFingerprint(toolCall.Args)
+				}
+				approvalKey := toolApprovalKey(toolCall.Tool, fingerprint)
+
 				// Check if already denied
-				if state.DeniedTools != nil && state.DeniedTools[toolCall.Tool] {
+				if state.DeniedTools != nil && state.DeniedTools[approvalKey] {
 					result.Blocked = true
 					result.RuleMatched = fmt.Sprintf("Zero-Trust: tool '%s' was denied for this session", toolCall.Tool)
 					sessionHistoryLock.Unlock()
 					return result
 				}
-				// Check if already approved
-				if state.ApprovedTools == nil || !state.ApprovedTools[toolCall.Tool] {
-					// Not approved — queue request and block
+				// Check if already approved and (for sensitive targets) the grant hasn't expired
+				grantedAt, approved := state.ApprovedTools[approvalKey]
+				ttl := time.Duration(policy.DataSensitivity.GrantTTLMinutes) * time.Minute
+				expired := sensFinding != nil && policy.DataSensitivity.GrantTTLMinutes > 0 && time.Since(grantedAt) >= ttl
+				if !approved || expired {
+					// Not approved (or grant expired) — queue request and block
 					sessionHistoryLock.Unlock()
-					approvalID := requestToolApproval(sessionKey, toolCall.Tool)
+					issue := ""
+					if sensFinding != nil {
+						issue = fmt.Sprintf("%s: %s (%s)", sensFinding.RuleID, sensFinding.Issue, sensFinding.Snippet)
+					}
+					approvalID := requestToolApproval(sessionKey, toolCall.Tool, fingerprint, issue)
 					result.Blocked = true
 					result.RuleMatched = fmt.Sprintf("Zero-Trust: tool '%s' requires admin approval (id=%s)", toolCall.Tool, approvalID)
 					return result

@@ -2483,16 +2483,17 @@ function Repave({role}){
         {approvals.length===0
           ?<p style={{fontSize:11,color:'var(--t3)',marginBottom:20,lineHeight:1.6}}>No approval requests yet. When an agent calls a high-risk tool (<code>exec</code>, <code>browser</code>, <code>sessions_spawn</code>) for the first time, the request appears here for admin sign-off.</p>
           :<div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden',marginBottom:20}}>
-            <div style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 70px 130px',padding:'6px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)',fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)',gap:12}}>
-              <span>Time</span><span>Session</span><span>Tool</span><span>Status</span><span></span>
+            <div style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 90px 70px 130px',padding:'6px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)',fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)',gap:12}}>
+              <span>Time</span><span>Session</span><span>Tool</span><span>Target</span><span>Status</span><span></span>
             </div>
             {approvals.sort((a,b)=>a.status==='pending'?-1:1).map(a=>{
               const sc=a.status==='approved'?'var(--green)':a.status==='denied'?'var(--red)':'var(--yellow)';
               return(
-                <div key={a.id} style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 70px 130px',alignItems:'center',padding:'9px 12px',borderBottom:'1px solid var(--b1)',gap:12,background:a.status==='pending'?'rgba(234,179,8,.04)':''}}>
+                <div key={a.id} style={{display:'grid',gridTemplateColumns:'80px 1fr 90px 90px 70px 130px',alignItems:'center',padding:'9px 12px',borderBottom:'1px solid var(--b1)',gap:12,background:a.status==='pending'?'rgba(234,179,8,.04)':''}}>
                   <span style={{fontSize:10,color:'var(--t3)'}}>{formatTs(a.requested_at,'local',false)} {localTZAbbr}</span>
                   <span style={{fontSize:11,fontFamily:'monospace',color:'var(--t2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.session_key}</span>
                   <span style={{fontSize:12,fontFamily:'monospace',fontWeight:a.status==='pending'?700:400,color:a.status==='pending'?'var(--yellow)':'var(--t3)'}}>{a.tool}</span>
+                  <span title={a.sensitivity_issue||''} style={{fontSize:11,fontFamily:'monospace',color:a.target_fingerprint?'var(--orange,#f59e0b)':'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:a.sensitivity_issue?'help':'default'}}>{a.target_fingerprint||'—'}</span>
                   <span style={{fontSize:10,color:sc,fontWeight:600,textTransform:'uppercase'}}>{a.status}</span>
                   {isAdmin&&a.status==='pending'?(
                     <div style={{display:'flex',gap:5}}>
