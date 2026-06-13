@@ -37,6 +37,9 @@ import (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
+//go:embed logo.png
+var logoPNG []byte
+
 // ──────────────────────────────────────────────
 // Log Capturer
 // ──────────────────────────────────────────────
@@ -4171,6 +4174,15 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleLogo serves the embedded AgentArmor logo as a static asset, used as
+// the favicon and brand mark across the dashboard, login, and loading pages.
+// No auth — it's a public branding asset referenced from the pre-auth login page.
+func handleLogo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(logoPNG) //nolint:errcheck
+}
+
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/armor/api/") {
 		handleDashboardAPI(w, r)
@@ -4576,53 +4588,64 @@ func modifyProxyResponse(resp *http.Response) error {
 
 		// 2. Add the dashboard button — glass-morphism widget that blends with OpenClaw's dark UI
 		injectionPayloadBuilder.WriteString(`<style>
+  /* ── AgentArmor widget (bottom-right): logo + name (→ dashboard) + expand button ──
+     position:fixed !important + a JS reparent to <html> keep it floating even when
+     OpenClaw puts a transform/filter on <body> (which would otherwise trap it in the
+     scroll flow). Raised above the chat composer at the bottom of the viewport. */
   #aa-widget {
-    position: fixed;
-    top: 10px;
-    right: 350px;
-    z-index: 9999;
+    position: fixed !important;
+    bottom: 88px !important;
+    right: 18px !important;
+    top: auto !important;
+    left: auto !important;
+    z-index: 2147483000 !important;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   }
-  #aa-btn {
+  /* ── Collapsed bar ── */
+  #aa-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 12px 7px 8px;
+    gap: 3px;
+    padding: 4px 5px 4px 7px;
     background: rgba(10, 10, 20, 0.88);
     border: 1px solid rgba(167, 139, 250, 0.35);
-    border-radius: 10px;
-    color: #e2e2f0;
-    text-decoration: none;
-    font-size: 12px;
-    font-weight: 500;
+    border-radius: 22px;
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     box-shadow: 0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04);
-    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
-    cursor: pointer;
-    user-select: none;
   }
-  #aa-btn:hover {
-    border-color: rgba(167, 139, 250, 0.75);
-    box-shadow: 0 4px 28px rgba(167,139,250,0.18), inset 0 1px 0 rgba(255,255,255,0.06);
-    transform: translateY(-2px);
-  }
-  #aa-mark {
-    display: inline-flex;
+  #aa-brand {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    flex-shrink: 0;
+    gap: 7px;
+    padding: 3px 8px 3px 2px;
+    border-radius: 16px;
+    text-decoration: none;
+    color: #e2e2f0;
+    transition: background 0.15s;
   }
-  #aa-label { line-height: 1; }
-  #aa-label b { color: #a78bfa; font-weight: 600; }
-  #aa-sub {
-    font-size: 10px;
-    color: #6060a0;
-    display: block;
-    margin-top: 1px;
+  #aa-brand:hover { background: rgba(167, 139, 250, 0.12); }
+  #aa-brand img { width: 22px; height: 22px; object-fit: contain; display: block; flex-shrink: 0; }
+  #aa-brand-name { font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+  #aa-brand-name b { color: #a78bfa; font-weight: 600; }
+  #aa-expand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 9px;
+    border-radius: 16px;
+    border: 1px solid rgba(167, 139, 250, 0.20);
+    background: rgba(167, 139, 250, 0.10);
+    color: #c0c0d8;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
   }
+  #aa-expand:hover { border-color: rgba(167, 139, 250, 0.55); background: rgba(167, 139, 250, 0.18); }
+  #aa-count { font-size: 11px; font-weight: 600; color: #c0c0d8; line-height: 1; white-space: nowrap; }
   #aa-led {
     width: 6px;
     height: 6px;
@@ -4636,13 +4659,26 @@ func modifyProxyResponse(resp *http.Response) error {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.35; }
   }
-  #aa-scanners {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 5px;
-    max-width: 340px;
+  #aa-caret { font-size: 9px; color: #9090b0; transition: transform 0.2s; }
+
+  /* ── Expanded detail panel (revealed on click) ── */
+  #aa-panel {
+    display: none;
+    width: 300px;
+    margin-bottom: 8px;
+    padding: 12px 14px;
+    background: rgba(10, 10, 20, 0.94);
+    border: 1px solid rgba(167, 139, 250, 0.30);
+    border-radius: 12px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
   }
+  #aa-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+  #aa-title { font-size: 13px; font-weight: 600; color: #e2e2f0; letter-spacing: -0.01em; }
+  #aa-title b { color: #a78bfa; font-weight: 600; }
+  #aa-sub { font-size: 10px; color: #6060a0; }
+  #aa-scanners { display: flex; flex-wrap: wrap; gap: 4px; }
   .aa-badge {
     display: inline-flex;
     align-items: center;
@@ -4672,12 +4708,24 @@ func modifyProxyResponse(resp *http.Response) error {
   .aa-dot-inactive{ background: #4b5563; }
 </style>
 <div id="aa-widget">
-  <a id="aa-btn" href="/armor/" target="_blank" title="Open AgentArmor dashboard">
-    <span id="aa-mark"><svg viewBox="0 0 28 28" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M14 2L25 8V20L14 26L3 20V8Z" stroke="#a78bfa" stroke-width="1.5" fill="rgba(167,139,250,0.18)"/><text x="14" y="17.5" text-anchor="middle" fill="#a78bfa" font-size="7.5" font-weight="800" font-family="-apple-system,system-ui,sans-serif" letter-spacing="0.5">AA</text></svg></span>
-    <span id="aa-label">Agent<b>Armor</b><span id="aa-sub">checking scanners…</span></span>
-    <span id="aa-led"></span>
-  </a>
-  <div id="aa-scanners"></div>
+  <div id="aa-panel" style="display:none">
+    <div id="aa-panel-head">
+      <span id="aa-title">Agent<b>Armor</b></span>
+      <span id="aa-sub">checking scanners…</span>
+    </div>
+    <div id="aa-scanners"></div>
+  </div>
+  <div id="aa-bar">
+    <a id="aa-brand" href="/armor/" target="_blank" title="Open AgentArmor dashboard">
+      <img src="/armor/logo.png" alt="AgentArmor"/>
+      <span id="aa-brand-name">Agent<b>Armor</b></span>
+    </a>
+    <button id="aa-expand" type="button" title="Scanner status — click to expand">
+      <span id="aa-led"></span>
+      <span id="aa-count">…</span>
+      <span id="aa-caret">▾</span>
+    </button>
+  </div>
 </div>
 <style>
 /* ── AgentArmor moderation message card ── */
@@ -4701,9 +4749,10 @@ func modifyProxyResponse(resp *http.Response) error {
 <script>
 (function () {
   /* Scanner status badges in the AgentArmor widget */
-  const led  = document.getElementById('aa-led');
-  const sub  = document.getElementById('aa-sub');
-  const cont = document.getElementById('aa-scanners');
+  const led   = document.getElementById('aa-led');
+  const sub   = document.getElementById('aa-sub');
+  const cont  = document.getElementById('aa-scanners');
+  const count = document.getElementById('aa-count');
 
   const DOT = {
     up:      'aa-dot-up',
@@ -4734,7 +4783,8 @@ func modifyProxyResponse(resp *http.Response) error {
     const up    = data.up    || 0;
     const total = data.total || 0;
 
-    /* Update subtitle and LED */
+    /* Update collapsed preview count, panel subtitle, and LED */
+    if (count) count.textContent = up + '/' + total;
     if (sub) sub.textContent = up + '/' + total + ' scanners active';
     if (led) {
       led.className = '';
@@ -4765,9 +4815,38 @@ func modifyProxyResponse(resp *http.Response) error {
       .then(function(r){ clearTimeout(tid); return r.json(); })
       .then(function(data){
         if (data && data.scanners) render(data);
-        else if (sub) sub.textContent = 'status unavailable';
+        else { if (sub) sub.textContent = 'status unavailable'; if (count) count.textContent = '–'; }
       })
-      .catch(function(){ if (sub) sub.textContent = 'status unavailable'; });
+      .catch(function(){ if (sub) sub.textContent = 'status unavailable'; if (count) count.textContent = '–'; });
+  }
+
+  /* Expand/collapse the detail panel on click (and close on outside click / Esc).
+     Driven by an inline style on the panel so it can't be overridden by
+     OpenClaw's own stylesheet (a CSS class toggle proved unreliable here). */
+  var widget = document.getElementById('aa-widget');
+  var expand = document.getElementById('aa-expand');
+  var panel  = document.getElementById('aa-panel');
+  var caret  = document.getElementById('aa-caret');
+  var expanded = false;
+  function setExpanded(v) {
+    expanded = v;
+    if (panel) panel.style.display = v ? 'block' : 'none';
+    if (caret) caret.style.transform = v ? 'rotate(180deg)' : 'rotate(0deg)';
+  }
+  if (widget && expand) {
+    /* Re-parent to <html> so a transform/filter on OpenClaw's <body> can't trap
+       our position:fixed widget inside the scrollable flow. */
+    try { document.documentElement.appendChild(widget); } catch (e) {}
+    expand.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setExpanded(!expanded);
+    });
+    document.addEventListener('click', function (e) {
+      if (!widget.contains(e.target)) setExpanded(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') setExpanded(false);
+    });
   }
 
   refresh();
@@ -4820,7 +4899,24 @@ func modifyProxyResponse(resp *http.Response) error {
 
 		// Only inject if we are proxying to openclaw and the body tag exists
 		if llmProvider == "openclaw" && strings.Contains(bodyString, "</body>") {
-			modifiedBody := strings.Replace(bodyString, "</body>", injectionPayloadBuilder.String()+"</body>", 1)
+			payload := injectionPayloadBuilder.String()
+
+			// OpenClaw ships a strict CSP (script-src 'self') that blocks inline
+			// scripts — which would silently break our injected helpers (the
+			// scanner-status poller, gateway-token setup). Rather than weaken the
+			// page with a blanket 'unsafe-inline', mint a per-response nonce, tag
+			// every injected <script> with it, and add 'nonce-…' to the page's
+			// script-src so ONLY our scripts are additionally permitted.
+			nonceBytes := make([]byte, 16)
+			rand.Read(nonceBytes) //nolint:errcheck
+			nonce := hex.EncodeToString(nonceBytes)
+			payload = strings.ReplaceAll(payload, "<script>", `<script nonce="`+nonce+`">`)
+			if csp := resp.Header.Get("Content-Security-Policy"); csp != "" && strings.Contains(csp, "script-src ") {
+				resp.Header.Set("Content-Security-Policy",
+					strings.Replace(csp, "script-src ", "script-src 'nonce-"+nonce+"' ", 1))
+			}
+
+			modifiedBody := strings.Replace(bodyString, "</body>", payload+"</body>", 1)
 			resp.Body = io.NopCloser(strings.NewReader(modifiedBody))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(modifiedBody)))
 			log.Println("✅ Injected AgentArmor UI helpers into OpenClaw UI")
@@ -4946,6 +5042,7 @@ func main() {
 	http.HandleFunc("/armor/user-logout", handleUserLogout)
 
 	http.HandleFunc("/armor/metrics", metricsHandler)
+	http.HandleFunc("/armor/logo.png", handleLogo)
 	http.HandleFunc("/armor/", handleDashboard)
 	http.HandleFunc("/armor", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/armor/", http.StatusMovedPermanently)
