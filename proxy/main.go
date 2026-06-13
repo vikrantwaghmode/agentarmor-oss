@@ -3075,6 +3075,21 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		if p.Scanners.CanaryTokens.Tokens == nil {
 			p.Scanners.CanaryTokens.Tokens = []Rule{}
 		}
+		if p.ExecutionScanning.Patterns == nil {
+			p.ExecutionScanning.Patterns = []ExecScanRule{}
+		}
+		if p.ExecutionScanning.Tools == nil {
+			p.ExecutionScanning.Tools = []string{}
+		}
+		if p.Webhooks == nil {
+			p.Webhooks = []WebhookEntry{}
+		}
+		if p.ThreatFeeds.Feeds == nil {
+			p.ThreatFeeds.Feeds = []FeedEntry{}
+		}
+		if p.AgentRouting.Rules == nil {
+			p.AgentRouting.Rules = []AgentRoutingRule{}
+		}
 		json.NewEncoder(w).Encode(p)
 
 	// GET /armor/api/mcp/audit — config-hardening findings + quarantined servers
@@ -3120,6 +3135,21 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if newPolicy.Scanners.CanaryTokens.Tokens == nil {
 			newPolicy.Scanners.CanaryTokens.Tokens = []Rule{}
+		}
+		if newPolicy.ExecutionScanning.Patterns == nil {
+			newPolicy.ExecutionScanning.Patterns = []ExecScanRule{}
+		}
+		if newPolicy.ExecutionScanning.Tools == nil {
+			newPolicy.ExecutionScanning.Tools = []string{}
+		}
+		if newPolicy.Webhooks == nil {
+			newPolicy.Webhooks = []WebhookEntry{}
+		}
+		if newPolicy.ThreatFeeds.Feeds == nil {
+			newPolicy.ThreatFeeds.Feeds = []FeedEntry{}
+		}
+		if newPolicy.AgentRouting.Rules == nil {
+			newPolicy.AgentRouting.Rules = []AgentRoutingRule{}
 		}
 		data, err := yaml.Marshal(newPolicy)
 		if err != nil {

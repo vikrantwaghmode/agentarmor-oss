@@ -19,6 +19,9 @@ if [ "$LLM_PROVIDER" = "openclaw" ]; then
 
     # Create state directories
     mkdir -p "${OPENCLAW_HOME}" /data/workspace /app/data
+    
+    # Enforce secure permissions on the OpenClaw configuration directory to prevent secret directory errors
+    chmod -R 700 "${OPENCLAW_HOME}" || true
 
     # Generate openclaw.json if it doesn't exist
     if [ ! -f "${OPENCLAW_CONFIG}" ]; then
@@ -51,7 +54,7 @@ if [ "$LLM_PROVIDER" = "openclaw" ]; then
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google/gemini-1.5-flash-8b"
+        "primary": "google/gemini-2.5-flash-lite"
       }
     }
   },

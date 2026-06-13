@@ -18,7 +18,7 @@ services:
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
     volumes:
       - ./data:/app/data                # Audit logs (SQLite default)
-      - ./config:/data/.openclaw        # OpenClaw state & config
+      - openclaw_config:/data/.openclaw # OpenClaw state & config (named volume for POSIX permissions)
       - ./workspace:/data/workspace     # OpenClaw workspace
       # Mount our custom security skill into OpenClaw's plugin directory.
       - ./openclaw-plugins:/app/openclaw/dist/custom-plugins
@@ -127,4 +127,5 @@ services:
 
 volumes:
   ollama_data:
+  openclaw_config:
   # postgres_data:

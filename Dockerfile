@@ -75,6 +75,7 @@ COPY --from=openclaw-build /build/package.json /app/openclaw/package.json
 COPY --from=openclaw-build /build/scripts /app/openclaw/scripts
 COPY --from=openclaw-build /build/skills /app/openclaw/skills
 COPY --from=openclaw-build /build/docs /app/openclaw/docs
+COPY --from=openclaw-build /build/src /app/openclaw/src
 
 # Copy AgentArmor binaries
 COPY --from=proxy-build /agentarmor-proxy /app/agentarmor-proxy

@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cd \"/mnt/1TB Projects/AI Experiments/agentarmor-oss/proxy\" && go build -o /tmp/agentarmor-proxy-test ./main.go ./skills.go ./skillscan.go ./execscan.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go ./docconv.go ./mcpbroker.go && echo \"BUILD OK\" && rm -f /tmp/agentarmor-proxy-test)"
+      "Bash(cd \"/mnt/1TB Projects/AI Experiments/agentarmor-oss/proxy\" && go build -o /tmp/agentarmor-proxy-test ./main.go ./skills.go ./skillscan.go ./execscan.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go ./docconv.go ./mcpbroker.go && echo \"BUILD OK\" && rm -f /tmp/agentarmor-proxy-test)",
+      "Bash(cd \"/mnt/1TB Projects/AI Experiments/agentarmor-oss\" && groups && ls -la /var/run/docker.sock)",
+      "Read(//run/**)",
+      "Bash(sudo -n docker compose ps -a)",
+      "Bash(awk '/^function /{print NR\": \"$0}' dashboard.html)",
+      "Bash(awk -F: '$1>=1085 && $1<=1820')"
     ],
     "additionalDirectories": [
       "/tmp"
