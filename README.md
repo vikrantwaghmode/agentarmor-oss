@@ -422,8 +422,6 @@ A quarantined skill can't be activated from the dashboard — `POST /armor/api/s
 
 ### Execution containment scanning (Phase 3.1)
 
-> **Honest scoping note:** the original roadmap for this phase described Kubernetes-CRD-managed, gVisor-isolated sandboxes intercepting every agent code execution. AgentArmor is a single-container JSON-level reverse proxy — it never spawns or executes agent code itself (`exec`/`browser`/`sessions_spawn` run inside the gateway process it fronts), so it has no subprocess or container to sandbox. Standing up that architecture would mean mounting the host Docker socket or granting an in-cluster Kubernetes API — a major new trust boundary, out of scope for this project. What follows is the proxy-realistic equivalent: inspecting the *arguments* of execution tool calls before they're forwarded.
-
 Every `{"tool":"...","args":{...}}` call whose tool name appears in `execution_scanning.tools` (default: `exec`) has its raw `args` JSON scanned against `execution_scanning.patterns`:
 
 | Severity | Default patterns | Effect |
@@ -431,13 +429,9 @@ Every `{"tool":"...","args":{...}}` call whose tool name appears in `execution_s
 | **critical** | `container-escape`, `destructive-filesystem`, `firewall-tamper` | Call is **hard-blocked** — `EXEC_BLOCK` alert + audit log entry. This applies **regardless of Zero-Trust Tool Approval**: a session approved to run `exec` at all is not thereby approved to run *this* command |
 | **high** | `credential-file-access`, `path-traversal` | Surfaced as an `EXEC_ALERT` — not blocked |
 | **medium** | `privilege-escalation`, `pipe-to-shell` | Surfaced as an `EXEC_ALERT` — not blocked |
-
 Zero-Trust Tool Approval answers "is this session allowed to call `exec` at all?"; the Execution Containment Scanner answers "is *this specific command* one that should never run, no matter who's asking?" — critical patterns (mounting `/proc/1/root`, `rm -rf /`, flushing AgentArmor's own egress `iptables` chain) have no legitimate use for an AI agent, so there's deliberately no `allow_scopes` bypass for them. All patterns are regexes configurable in `execution_scanning.patterns`; findings appear in the Audit Log tab and the Alerts ticker via the existing `logAuditEvent`/`addAlert` plumbing.
 
 ### Data-sensitivity-aware execution grants (Phase 4.1)
-
-> **Honest scoping note:** the original roadmap for "Phase 4: Dynamic Governed Execution" described a Governed Execution Engine that builds a Program Dependency Graph and uses a static Type System to detect when an agent deviates from a mathematically-defined execution grant, killing the thread mid-run. That PDG / type-system machinery belongs to a *different, academic* "AgentArmor" (a Python/FastAPI research project) — none of it exists in this Go reverse proxy, and a JSON-level proxy can't construct a program dependency graph of code it never executes. What follows is the proxy-realistic equivalent: binding an approval grant to the *specific target* a tool call touches, with a time-boxed expiry.
-
 Plain Zero-Trust Tool Approval is per *(session, tool)*: once an admin approves `exec` once, every subsequent `exec` call in that session is allowed — regardless of whether it's listing a temp directory or reading `/etc/shadow`. Phase 4.1 closes that gap (the report's "DELETE a temp file vs. DELETE a production table" example). When `data_sensitivity.enabled` is true, a high-risk tool call's raw `args` JSON is classified against `data_sensitivity.patterns`:
 
 | Severity | Default patterns | What it catches |
