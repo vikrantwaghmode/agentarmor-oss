@@ -21,8 +21,14 @@ import (
 type Framework string
 
 const (
-	ISO42001 Framework = "ISO/IEC 42001"
-	SOC2     Framework = "SOC 2"
+	ISO42001  Framework = "ISO/IEC 42001"
+	SOC2      Framework = "SOC 2"
+	GDPR      Framework = "GDPR"
+	HIPAA     Framework = "HIPAA"
+	PCIDSS    Framework = "PCI DSS v4.0"
+	ISO27001  Framework = "ISO/IEC 27001"
+	NISTAIRMF Framework = "NIST AI RMF"
+	EUAIAct   Framework = "EU AI Act"
 )
 
 // Control is one regulatory control and the predicate that decides whether an
@@ -72,6 +78,28 @@ func layerIs(e audit.AuditEvent, layers ...audit.Layer) bool {
 		}
 	}
 	return false
+}
+
+// anyEvent matches every audit record — used for "record-keeping / logging"
+// controls where the immutable log's mere existence and completeness is the
+// evidence (the log captures every action).
+func anyEvent(audit.AuditEvent) bool { return true }
+
+// ── reusable capability predicates (shared across frameworks) ──
+func human(e audit.AuditEvent) bool {
+	return actionIs(e, "hitl_decision", "hitl_escalation") || layerIs(e, audit.LayerIdentity)
+}
+func access(e audit.AuditEvent) bool {
+	return layerIs(e, audit.LayerIdentity, audit.LayerInterAgent) || ruleHas(e, "Zero-Trust") || actionIs(e, "hitl_decision")
+}
+func dataProtection(e audit.AuditEvent) bool { return outcomeIs(e, "REDACTED") }
+func paymentData(e audit.AuditEvent) bool    { return ruleHas(e, "Payment Data Masked", "PAN", "SAD") }
+func monitoring(e audit.AuditEvent) bool     { return outcomeIs(e, "BLOCKED", "ALERTED") }
+func riskAssessment(e audit.AuditEvent) bool {
+	return ruleHas(e, "High-Risk Sequence", "Anomaly", "Zero-Trust") || actionIs(e, "hitl_escalation")
+}
+func egress(e audit.AuditEvent) bool {
+	return layerIs(e, audit.LayerExecution) || ruleHas(e, "SSRF", "Internal IP", "DNS Rebinding", "Firewall", "Rate Limit", "Blast Radius")
 }
 
 // Catalog returns the control set AgentArmor maps runtime evidence onto. It is
@@ -152,5 +180,90 @@ func Catalog() []Control {
 				return outcomeIs(e, "REDACTED")
 			},
 		},
+
+		// ── GDPR (General Data Protection Regulation) ──
+		{ID: "Art. 22", Framework: GDPR, Title: "Automated Decisions & Human Oversight",
+			Description: "High-risk autonomous actions are suspended and routed to an operator-signed human decision, so significant decisions are not based solely on automated processing.",
+			Match:       human},
+		{ID: "Art. 32", Framework: GDPR, Title: "Security of Processing",
+			Description: "Personal data is masked in transit/at rest, and every action is recorded in a tamper-evident log providing integrity and confidentiality of processing.",
+			Match:       dataProtection},
+		{ID: "Art. 25", Framework: GDPR, Title: "Data Protection by Design & Least Privilege",
+			Description: "Scoped, just-in-time agent identities enforce data minimization and purpose limitation.",
+			Match:       access},
+		{ID: "Art. 30", Framework: GDPR, Title: "Records of Processing Activities",
+			Description: "The immutable audit log is a complete, cryptographically-sealed record of every processing activity.",
+			Match:       anyEvent},
+
+		// ── HIPAA Security Rule ──
+		{ID: "164.312(a)", Framework: HIPAA, Title: "Access Control",
+			Description: "Unique, scoped agent identities and Zero-Trust tool approval restrict access to ePHI to the minimum necessary.",
+			Match:       access},
+		{ID: "164.312(b)", Framework: HIPAA, Title: "Audit Controls",
+			Description: "Hardware/software mechanisms record and examine activity in systems that contain ePHI (the sealed audit log).",
+			Match:       anyEvent},
+		{ID: "164.312(c)", Framework: HIPAA, Title: "Integrity",
+			Description: "ePHI is protected from improper alteration; the BLAKE3/Merkle chain makes any tampering detectable.",
+			Match:       monitoring},
+		{ID: "164.312(e)", Framework: HIPAA, Title: "Transmission Security",
+			Description: "Egress controls (SSRF/DNS-rebinding/firewall) guard ePHI against transmission to unauthorized endpoints.",
+			Match:       egress},
+
+		// ── PCI DSS v4.0 ──
+		{ID: "Req. 3", Framework: PCIDSS, Title: "Protect Stored Account Data",
+			Description: "Primary Account Numbers are masked to last-4 and Sensitive Authentication Data is purged before any persistence.",
+			Match:       paymentData},
+		{ID: "Req. 4", Framework: PCIDSS, Title: "Protect Cardholder Data in Transit",
+			Description: "Strict egress allow-listing routes payment traffic only to approved processors over TLS.",
+			Match:       egress},
+		{ID: "Req. 7", Framework: PCIDSS, Title: "Restrict Access by Need-to-Know",
+			Description: "Only specific agents under verified sessions may invoke payment tools.",
+			Match:       access},
+		{ID: "Req. 10", Framework: PCIDSS, Title: "Log & Monitor All Access",
+			Description: "Every access to system components and cardholder data is tracked in the tamper-evident log.",
+			Match:       anyEvent},
+
+		// ── ISO/IEC 27001:2022 Annex A ──
+		{ID: "A.5.15", Framework: ISO27001, Title: "Access Control",
+			Description: "Role-based, least-privilege access is enforced for agent identities and tools.",
+			Match:       access},
+		{ID: "A.8.12", Framework: ISO27001, Title: "Data Leakage Prevention",
+			Description: "Secrets, PII, and payment data are detected and redacted before leaving the boundary.",
+			Match:       dataProtection},
+		{ID: "A.8.15", Framework: ISO27001, Title: "Logging",
+			Description: "Activity, exceptions, and security events are recorded in an immutable log.",
+			Match:       anyEvent},
+		{ID: "A.8.16", Framework: ISO27001, Title: "Monitoring Activities",
+			Description: "Anomalous behavior and policy violations are detected and responded to in real time.",
+			Match:       monitoring},
+
+		// ── NIST AI Risk Management Framework (AI RMF 1.0) ──
+		{ID: "GOVERN", Framework: NISTAIRMF, Title: "Accountability & Human Oversight",
+			Description: "Authenticated identities and operator-signed approvals establish accountability over agent actions.",
+			Match:       human},
+		{ID: "MAP", Framework: NISTAIRMF, Title: "Context & Risk Identification",
+			Description: "Semantic risk scoring identifies the intent and potential impact of an action before execution.",
+			Match:       riskAssessment},
+		{ID: "MEASURE", Framework: NISTAIRMF, Title: "Risk Measurement & Monitoring",
+			Description: "Threats are continuously detected and quantified against configured thresholds.",
+			Match:       monitoring},
+		{ID: "MANAGE", Framework: NISTAIRMF, Title: "Risk Response & Mitigation",
+			Description: "High-risk actions are blocked, escalated to humans, or redacted to mitigate impact.",
+			Match: func(e audit.AuditEvent) bool {
+				return monitoring(e) || dataProtection(e) || human(e)
+			}},
+
+		// ── EU AI Act (high-risk system obligations) ──
+		{ID: "Art. 14", Framework: EUAIAct, Title: "Human Oversight",
+			Description: "High-risk actions are intercepted for meaningful human review with a bound operator identity.",
+			Match:       human},
+		{ID: "Art. 12", Framework: EUAIAct, Title: "Record-Keeping (Logging)",
+			Description: "Automatic, tamper-evident logging captures events over the system's lifetime.",
+			Match:       anyEvent},
+		{ID: "Art. 15", Framework: EUAIAct, Title: "Accuracy, Robustness & Cybersecurity",
+			Description: "Prompt-injection, malicious-content, and exfiltration defenses harden the system against manipulation.",
+			Match: func(e audit.AuditEvent) bool {
+				return monitoring(e) || ruleHas(e, "Prompt Injection", "Malicious", "Canary")
+			}},
 	}
 }

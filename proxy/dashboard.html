@@ -3416,8 +3416,14 @@ function ComplianceTab({role}){
         <select value={framework} onChange={e=>setFramework(e.target.value)}
           style={{padding:'7px 10px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t1)',fontSize:12}}>
           <option value="">All frameworks</option>
-          <option value="iso42001">ISO/IEC 42001</option>
+          <option value="iso42001">ISO/IEC 42001 (AI management)</option>
           <option value="soc2">SOC 2</option>
+          <option value="gdpr">GDPR</option>
+          <option value="hipaa">HIPAA</option>
+          <option value="pcidss">PCI DSS v4.0</option>
+          <option value="iso27001">ISO/IEC 27001</option>
+          <option value="nist">NIST AI RMF</option>
+          <option value="euaiact">EU AI Act</option>
         </select>
         <button disabled={!enabled||busy} onClick={()=>download('pdf')}
           style={{padding:'7px 14px',borderRadius:'var(--r)',border:'1px solid rgba(167,139,250,.4)',background:'rgba(167,139,250,.1)',color:'var(--purple)',fontSize:12,fontWeight:600,cursor:enabled?'pointer':'not-allowed'}}>

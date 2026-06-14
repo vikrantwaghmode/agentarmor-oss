@@ -18,10 +18,22 @@ import (
 // frameworksFromQuery maps the ?framework= query value to the catalog filter.
 func frameworksFromQuery(v string) []report.Framework {
 	switch strings.ToLower(v) {
-	case "iso42001", "iso", "iso-42001":
+	case "iso42001", "iso-42001", "aims":
 		return []report.Framework{report.ISO42001}
 	case "soc2", "soc-2", "soc":
 		return []report.Framework{report.SOC2}
+	case "gdpr":
+		return []report.Framework{report.GDPR}
+	case "hipaa":
+		return []report.Framework{report.HIPAA}
+	case "pci", "pcidss", "pci-dss":
+		return []report.Framework{report.PCIDSS}
+	case "iso27001", "iso-27001", "isms":
+		return []report.Framework{report.ISO27001}
+	case "nist", "nistairmf", "nist-ai-rmf", "airmf":
+		return []report.Framework{report.NISTAIRMF}
+	case "euaiact", "eu-ai-act", "aiact":
+		return []report.Framework{report.EUAIAct}
 	default:
 		return nil // all frameworks
 	}
