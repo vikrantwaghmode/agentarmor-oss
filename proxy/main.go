@@ -492,6 +492,15 @@ type ToolApprovalRequest struct {
 	SensitivityIssue  string `json:"sensitivity_issue,omitempty"`
 	RequestedAt       string `json:"requested_at"`
 	Status            string `json:"status"` // pending | approved | denied
+	// EscalationID links this approval to its Phase-2 HITL escalation, so the
+	// approving operator's identity can be cryptographically bound on decision.
+	EscalationID string `json:"escalation_id,omitempty"`
+	// OperatorID / SigAlgo / Signature are populated once an admin decides, so
+	// the dashboard can show who authorized the action and the verifiable
+	// operator-bound signature (Phase 2 accountability chain).
+	OperatorID string `json:"operator_id,omitempty"`
+	SigAlgo    string `json:"sig_algo,omitempty"`
+	Signature  string `json:"signature,omitempty"`
 }
 
 var (
@@ -546,6 +555,8 @@ func requestToolApproval(sessionKey, tool, fingerprint, issue string) string {
 		SensitivityIssue:  issue,
 		RequestedAt:       time.Now().Format(time.RFC3339),
 		Status:            "pending",
+		// Phase 2: raise a signed HITL escalation for this suspended action.
+		EscalationID: hitlEscalate(sessionKey, tool, fingerprint, issue),
 	}
 	if fingerprint != "" {
 		log.Printf("🔐 Zero-trust: approval required for tool '%s' against sensitive target %s (session %s, id=%s): %s", tool, fingerprint, display, id, issue)
@@ -1460,6 +1471,10 @@ func logAuditEvent(clientIP, sessionKey, direction, action, ruleMatched, payload
 	}
 	// Fire webhook asynchronously — never blocks the request path
 	go dispatchWebhook(action, direction, ruleMatched, payloadSnippet, clientIP)
+
+	// Mirror into the tamper-evident sealed audit log (Compliance Phase 1).
+	// Async + fail-safe: never affects the request path or the SQLite write above.
+	go recordComplianceEvent(clientIP, sessionKey, direction, action, ruleMatched, payloadSnippet)
 }
 
 // ──────────────────────────────────────────────
@@ -2679,6 +2694,9 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 						issue = fmt.Sprintf("%s: %s (%s)", sensFinding.RuleID, sensFinding.Issue, sensFinding.Snippet)
 					}
 					approvalID := requestToolApproval(sessionKey, toolCall.Tool, fingerprint, issue)
+					// Phase 2: enrich the escalation with the tool params + prompt
+					// the reviewer needs to judge the suspended action.
+					hitlEnrichEscalation(approvalID, toolCall.Args, contentToScan)
 					result.Blocked = true
 					result.RuleMatched = fmt.Sprintf("Zero-Trust: tool '%s' requires admin approval (id=%s)", toolCall.Tool, approvalID)
 					return result
@@ -2978,6 +2996,48 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 		}
 	}
 
+	// --- Deep Data Inspection: PAN / SAD masking (Compliance Phase 3, PCI DSS Req. 3) ---
+	// Composes with the secrets redactor above: masks Primary Account Numbers
+	// (last-4 retained) and fully purges Sensitive Authentication Data on both
+	// the request (L1) and response (L6) paths, before forwarding/logging.
+	if complianceDLPEnabled {
+		if det := complianceInspector.Inspect(contentToScan); det.Found() {
+			result.Redacted = true
+			reason := dlpReason(det)
+			if result.RuleMatched == "" {
+				result.RuleMatched = reason
+			} else {
+				result.RuleMatched += "; " + reason
+			}
+			if isUIFrame {
+				// Re-mask each non-system message in place (composes with any
+				// secret redaction already applied to requestFrame above).
+				if msgs, ok := requestFrame["messages"].([]interface{}); ok {
+					for _, m := range msgs {
+						if msg, ok := m.(map[string]interface{}); ok {
+							if role, _ := msg["role"].(string); role == "system" {
+								continue
+							}
+							if content, ok := msg["content"].(string); ok {
+								msg["content"] = maskPaymentData(content)
+							}
+						}
+					}
+					if modified, err := json.Marshal(requestFrame); err == nil {
+						result.Payload = string(modified)
+					}
+				}
+			} else {
+				base := contentToScan
+				if result.Payload != "" {
+					base = result.Payload // mask whatever the secrets step produced
+				}
+				result.Payload = maskPaymentData(base)
+			}
+			go addAlert("PCI_DLP", reason)
+		}
+	}
+
 	// WASM filters — run after all built-in scanners
 	if wasmEnabled && !result.Blocked {
 		if blocked, rule := runWASMFilters(contentToScan, direction, sessionKey, tnt.Meta.ID); blocked {
@@ -3174,6 +3234,22 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			"findings":    findings,
 			"quarantined": quarantined,
 		})
+
+	// GET /armor/api/compliance/verify — cryptographic integrity status
+	case endpoint == "compliance/verify" && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		handleComplianceVerify(w, r)
+
+	// GET /armor/api/compliance/report?format=pdf|docx|json&framework=iso42001|soc2
+	case (endpoint == "compliance/report" || strings.HasPrefix(endpoint, "compliance/report?")) && r.Method == http.MethodGet:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		handleComplianceReport(w, r)
 
 	// POST /armor/api/policy
 	case endpoint == "policy" && r.Method == http.MethodPost:
@@ -3655,10 +3731,13 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			ID string `json:"id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		escID := escalationIDForApproval(body.ID)
 		if ok := approveToolRequest(body.ID); !ok {
 			http.Error(w, `{"error":"not found or already actioned"}`, http.StatusNotFound)
 			return
 		}
+		// Phase 2: bind the approving operator's verified identity to the decision.
+		recordHITLDecision(body.ID, escID, "approved", r)
 		logAuditEvent("", "", "System", "TOOL_APPROVED", "Tool approval granted: "+body.ID, "")
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 
@@ -3672,10 +3751,12 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			ID string `json:"id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		escID := escalationIDForApproval(body.ID)
 		if ok := denyToolRequest(body.ID); !ok {
 			http.Error(w, `{"error":"not found or already actioned"}`, http.StatusNotFound)
 			return
 		}
+		recordHITLDecision(body.ID, escID, "denied", r)
 		logAuditEvent("", "", "System", "TOOL_DENIED", "Tool request denied: "+body.ID, "")
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 
@@ -4986,6 +5067,8 @@ func main() {
 	initAuditDB()
 	InitTenants() // must run after initAuditDB so tenant handlers have the DB
 	initAgentTokensTable()
+	initComplianceAudit() // tamper-evident sealed audit log (Compliance Phase 1)
+	initComplianceDLP()   // PAN/SAD deep-data inspection & masking (Compliance Phase 3)
 	loadPolicy()
 	go watchPolicyFile()
 	go cleanupSessionHistory()

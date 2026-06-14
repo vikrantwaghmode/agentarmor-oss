@@ -4,11 +4,12 @@ config/
 workspace/
 *.db
 
-# Go build artifacts
-# Add the names of your compiled binaries here if they are created locally
-# For example:
-# agentarmor
-# firewall
+# Go build artifacts — locally-compiled binaries (`go build .` drops these in proxy/)
+proxy/agentarmor
+proxy/firewall
+/agentarmor-proxy
+/agentarmor-firewall
+*.test
 
 # IDE/Editor specific files
 .vscode/

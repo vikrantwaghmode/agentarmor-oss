@@ -16,7 +16,10 @@ require (
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-pdf/fpdf v0.9.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	golang.org/x/net v0.27.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	lukechampine.com/blake3 v1.4.1 // indirect
 )
