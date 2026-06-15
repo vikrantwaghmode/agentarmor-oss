@@ -37,13 +37,23 @@ AgentArmor is a **two-layer security proxy** for LLM-powered applications. It si
 
 AgentArmor is built around three principles:
 
+<details>
+<summary><strong>The three principles (click to expand)</strong></summary>
+<br>
+
 | Principle | What it means | How AgentArmor implements it |
 |-----------|--------------|------------------------------|
 | **Assume Breach** | Every session is already compromised | Canary tokens detect exfiltration; intent scoring detects lateral movement; anomaly scoring detects behavioural deviation |
 | **Survive** | Stay operational and logging under active attack | Graceful sidecar degradation; WAL-mode SQLite audit log; per-scanner fallbacks |
 | **Repave** | Destroy and rebuild from known-good state | Session kill switch (<1 s); canary rotation (<1 s); policy rollback (<1 s); automated repave trigger |
 
+</details>
+
 ## Features
+
+<details>
+<summary><strong>Full scanner &amp; feature matrix — 45 capabilities (click to expand)</strong></summary>
+<br>
 
 | Scanner / Feature | Direction | Action | What it catches |
 |-------------------|-----------|--------|-----------------|
@@ -90,6 +100,8 @@ AgentArmor is built around three principles:
 | Infrastructure Config | — | Config | `infra.yaml` dashboard (tab 10) — configure PostgreSQL, Redis, ACME, metrics token with hot-reload; **Restart System** button with "now or later" dialog |
 | **Context-Aware Agent Tokens (ABAC)** | — | Auth | Signed JWTs with capability scopes; every scanner respects scopes; ephemeral child tokens for dynamic agents; spawn-chain with scope subsetting |
 | Web Dashboard | — | Monitor | Editorial Terminal UI — live ticker, ⌘K palette, RBAC; 11 tabs including Agent Tokens (11) for issuing and revoking scoped JWTs |
+
+</details>
 
 ## Quick Start
 
@@ -176,10 +188,16 @@ AgentArmor Proxy ← TLS terminates here
 OpenClaw Gateway :18789 (bound to 127.0.0.1)
 ```
 
+<details>
+<summary><strong>Port reference (click to expand)</strong></summary>
+<br>
+
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | `8443` | HTTPS / WSS | All proxy traffic — scanner pipeline, dashboard, WebSocket relay |
 | `8080` | HTTP | Redirect only → `https://host:8443` |
+
+</details>
 
 **Production cert:** Mount your CA-signed certificate into `./certs/` as `server.crt` + `server.key`. The proxy picks them up on next restart — no rebuild.
 
@@ -383,6 +401,10 @@ allowed_domains:
 
 Five built-in personas live in `./skills/<id>/` — each has a `skill.yaml` (system prompt + keywords) and `knowledge/*.md` (RAG docs).
 
+<details>
+<summary><strong>The five built-in personas (click to expand)</strong></summary>
+<br>
+
 | ID | Name | Expertise |
 |----|------|-----------|
 | `security-engineer` | Security Engineer | AppSec, OWASP, pentesting, CVE analysis |
@@ -390,6 +412,8 @@ Five built-in personas live in `./skills/<id>/` — each has a `skill.yaml` (sys
 | `software-developer` | Software Developer | Code review, design patterns, API design |
 | `software-qa` | Software QA Engineer | Test strategy, automation, bug reporting |
 | `cloud-engineer` | Cloud Engineer | AWS/GCP/Azure, Terraform, Kubernetes |
+
+</details>
 
 **Activation priority:** `X-AgentArmor-Skill` header → `[ARMOR-SKILL:xxx]` marker → keyword match → semantic auto-route → admin-activated global defaults
 
@@ -399,11 +423,17 @@ Admin can activate skills globally from the **Skills tab (05)** in the dashboard
 
 Every skill loaded from `./skills/<id>/` — its `skill.yaml` (`name`, `description`, `keywords`, `system_prompt`) plus every `knowledge/*.md` doc — is scanned on each policy load against `skill_scanning.patterns` for "dual-vector" toxic-skill indicators, the pattern described in Snyk's ToxicSkills research: malicious intent can live in the **natural-language layer** (prompt-injection directives embedded in a skill's own instructions, aimed at the orchestrating agent) as well as the **executable-code layer** (shell/code snippets in knowledge docs).
 
+<details>
+<summary><strong>Severity tiers &amp; effects (click to expand)</strong></summary>
+<br>
+
 | Severity | Default patterns | Effect |
 |----------|-------------------|--------|
 | **critical** | `pipe-to-shell`, `base64-decode-exec`, `credential-file-exfil`, `prompt-override` | Skill is **quarantined** when `block_critical: true` — `DetectSkill` stops selecting it (header, `[ARMOR-SKILL:xxx]` marker, keyword, and semantic auto-routing all skip it) and `BuildSkillContext` withholds its system prompt and knowledge docs, until the skill or the matching pattern is fixed and the policy is reloaded |
 | **high** | `destructive-command`, `shell-eval` | Surfaced as a finding only — not blocked |
 | **medium** | `outbound-network-call`, `large-base64-blob` | Surfaced as a finding only |
+
+</details>
 
 A quarantined skill can't be activated from the dashboard — `POST /armor/api/skills/toggle` returns 403 with the quarantine reason. Full findings and the current quarantine map are available at `GET /armor/api/skills` (`audit.findings` / `audit.quarantined`) and rendered in the Skills tab, including a "QUARANTINED" badge on the affected skill card. All patterns are regexes configurable in `skill_scanning.patterns` — add your own or disable defaults that produce false positives for your skills.
 
@@ -411,21 +441,33 @@ A quarantined skill can't be activated from the dashboard — `POST /armor/api/s
 
 Every `{"tool":"...","args":{...}}` call whose tool name appears in `execution_scanning.tools` (default: `exec`) has its raw `args` JSON scanned against `execution_scanning.patterns`:
 
+<details>
+<summary><strong>Severity tiers &amp; effects (click to expand)</strong></summary>
+<br>
+
 | Severity | Default patterns | Effect |
 |----------|-------------------|--------|
 | **critical** | `container-escape`, `destructive-filesystem`, `firewall-tamper` | Call is **hard-blocked** — `EXEC_BLOCK` alert + audit log entry. This applies **regardless of Zero-Trust Tool Approval**: a session approved to run `exec` at all is not thereby approved to run *this* command |
 | **high** | `credential-file-access`, `path-traversal` | Surfaced as an `EXEC_ALERT` — not blocked |
 | **medium** | `privilege-escalation`, `pipe-to-shell` | Surfaced as an `EXEC_ALERT` — not blocked |
+
+</details>
 Zero-Trust Tool Approval answers "is this session allowed to call `exec` at all?"; the Execution Containment Scanner answers "is *this specific command* one that should never run, no matter who's asking?" — critical patterns (mounting `/proc/1/root`, `rm -rf /`, flushing AgentArmor's own egress `iptables` chain) have no legitimate use for an AI agent, so there's deliberately no `allow_scopes` bypass for them. All patterns are regexes configurable in `execution_scanning.patterns`; findings appear in the Audit Log tab and the Alerts ticker via the existing `logAuditEvent`/`addAlert` plumbing.
 
 ### Data-sensitivity-aware execution grants (Phase 4.1)
 Plain Zero-Trust Tool Approval is per *(session, tool)*: once an admin approves `exec` once, every subsequent `exec` call in that session is allowed — regardless of whether it's listing a temp directory or reading `/etc/shadow`. Phase 4.1 closes that gap (the report's "DELETE a temp file vs. DELETE a production table" example). When `data_sensitivity.enabled` is true, a high-risk tool call's raw `args` JSON is classified against `data_sensitivity.patterns`:
+
+<details>
+<summary><strong>Severity tiers &amp; what they catch (click to expand)</strong></summary>
+<br>
 
 | Severity | Default patterns | What it catches |
 |----------|-------------------|-----------------|
 | **critical** | `credential-files` | `/etc/shadow`, `/etc/passwd`, `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env` |
 | **high** | `production-resource`, `destructive-sql` | `prod-database`, `production_bucket`; `DROP TABLE` / `TRUNCATE` / `DELETE FROM` |
 | **medium** | `sensitive-system-paths` | `/etc`, `/root`, `/boot`, `/var/lib`, `/sys`, `/proc` |
+
+</details>
 
 On a match, the approval is keyed to `tool|<sha256(args)[:12]>` rather than just the tool name, so:
 
@@ -436,10 +478,16 @@ Non-sensitive calls (no pattern match) keep the original per-*(session, tool)* b
 
 ### Sidecars
 
+<details>
+<summary><strong>Sidecar services (click to expand)</strong></summary>
+<br>
+
 | Service | Purpose | Setup |
 |---------|---------|-------|
 | `ollama` | LLM scanner + semantic RAG | Models pulled automatically by `ollama-pull` on first `docker compose up`; models: `llama3.2:3b` (scanner) + `nomic-embed-text` (RAG) |
 | `presidio-analyzer` | Confidence-gated PII | Enable `pii.advanced_pii.enabled: true` after confirming `curl http://localhost:3000/health` |
+
+</details>
 
 Both fail gracefully — proxy falls back to regex scanners if unreachable.
 
@@ -483,6 +531,10 @@ agentarmor-oss/
 
 AgentArmor is a single stateless binary that fits into any enterprise topology. Choose the pattern that matches your scale, compliance requirements, and existing infrastructure.
 
+<details>
+<summary><strong>Pick a pattern by requirement (click to expand)</strong></summary>
+<br>
+
 | Requirement | Recommended Pattern |
 |---|---|
 | Trying it out, POC | [Pattern 1](#) — single container |
@@ -492,6 +544,8 @@ AgentArmor is a single stateless binary that fits into any enterprise topology. 
 | Data residency / air-gap | [Pattern 5](#) — on-premises |
 | All of the above (phased rollout) | Start with 1 → migrate to 3 → decompose to 4 |
 
+</details>
+
 All patterns use the same Docker image and the same `policy.yaml` schema — you change the infrastructure around AgentArmor, not AgentArmor itself.
 
 ### Deployment profiles & build flavors
@@ -499,6 +553,10 @@ All patterns use the same Docker image and the same `policy.yaml` schema — you
 Rather than hand-tune ~20 feature toggles, pick a **profile** that seeds the relevant ones, and optionally a leaner **build flavor**.
 
 **Runtime profiles** — set `profile:` at the top of `policy.yaml` (or switch live from the dashboard's Infrastructure tab, with a preview of exactly which scanners flip):
+
+<details>
+<summary><strong>Runtime profiles (click to expand)</strong></summary>
+<br>
 
 | `profile:` | Seeds | For |
 |---|---|---|
@@ -508,14 +566,22 @@ Rather than hand-tune ~20 feature toggles, pick a **profile** that seeds the rel
 | `compliance` | core + zero-trust + data-sensitivity + Presidio (pair with the compliance engine) | regulated (GDPR/HIPAA/PCI/SOC 2/ISO/EU AI Act) |
 | `custom` | nothing — you drive every toggle | hand-tuned setups |
 
+</details>
+
 The profile is a **baseline**: it seeds defaults *before* your `policy.yaml` is applied, so any explicit key you set always wins. Switching a profile in the dashboard stamps the governed toggles to that baseline and hot-reloads (snapshotted for rollback). An absent or `custom` profile changes nothing — existing policies are unaffected. The active profile + per-module status is at `GET /armor/api/profile`.
 
 **Build flavors** — a compile-time choice for binary size / attack surface:
+
+<details>
+<summary><strong>Build flavors (click to expand)</strong></summary>
+<br>
 
 | Flavor | Build | Includes |
 |---|---|---|
 | `full` (default) | `docker compose build` | everything — compliance engine (BLAKE3 audit log, HITL, PCI/OCR, reporting) + WASM filter runtime |
 | `lite` | `docker compose build --build-arg ARMOR_FLAVOR=lite` | core L7 firewall only — compiles out the compliance engine and WASM runtime, dropping the `blake3`, `fpdf`, and `wazero` dependencies (~5.5 MB smaller, smaller attack surface) |
+
+</details>
 
 The flavor is reported in `GET /armor/api/profile` and shown in the dashboard header (`EDGE PROFILE · LITE`). In the `lite` build the `/armor/api/compliance/*` endpoints return `{"enabled":false,"flavor":"lite"}`.
 
@@ -749,6 +815,10 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 
 ## Enterprise Readiness
 
+<details>
+<summary><strong>Full enterprise-readiness checklist (click to expand)</strong></summary>
+<br>
+
 | Area | Status | Notes |
 |------|--------|-------|
 | TLS / transport encryption | ✅ | Auto self-signed by default; bring your own cert for production |
@@ -774,11 +844,17 @@ Fully self-contained deployment with no internet access. All LLM scanning uses l
 | **Dashboard infrastructure config** | ✅ | All infra settings (DB, Redis, ACME, OTel, metrics token) editable from tab 10; hot-reload where possible; restart dialog for settings that need it |
 | **Context-aware ABAC (agent tokens)** | ✅ | Scoped JWTs gate every scanner; ephemeral child tokens for dynamic agents; spawn-chain with scope subsetting and cascading revocation; agent routing policy |
 
+</details>
+
 The security *design* is enterprise-grade. All major infrastructure gaps have been closed.
 
 ## Infrastructure Configuration (Dashboard Tab 10)
 
 All infrastructure settings are managed from the **Infrastructure tab (10)** in the dashboard — no shell access or file editing required after initial setup.
+
+<details>
+<summary><strong>Infrastructure settings reference (click to expand)</strong></summary>
+<br>
 
 | Setting | Hot-reload | How to configure |
 |---|---|---|
@@ -786,6 +862,8 @@ All infrastructure settings are managed from the **Infrastructure tab (10)** in 
 | Redis URL | **Yes** — reconnects immediately | Infrastructure tab → Rate Limiting section |
 | ACME domain + email | No — restart required | Infrastructure tab → TLS section |
 | Metrics scrape token | **Yes** — live | Infrastructure tab → Prometheus section |
+
+</details>
 
 **Save behaviour:** When you click **Save & Apply**, changes that can be applied immediately take effect without interruption. Settings that need a restart trigger a dialog:
 
@@ -848,6 +926,10 @@ AgentArmor's default policy applies uniformly to every request. When you have ag
 
 ### Capability scopes
 
+<details>
+<summary><strong>Capability scope reference (click to expand)</strong></summary>
+<br>
+
 | Scope | What it unlocks |
 |---|---|
 | `pii:read` | Receive PII in LLM responses (outbound PII scanner bypassed) |
@@ -861,6 +943,8 @@ AgentArmor's default policy applies uniformly to every request. When you have ag
 | `anomaly:exempt` | Anomaly scoring bypassed — for predictable multi-step pipelines |
 | `blast_radius:exempt` | Blast-radius cap bypassed — for orchestrators that do many tool calls |
 | `agent:spawn` | Can create child tokens for downstream agents (scope subsetting enforced) |
+
+</details>
 
 **Scanners that are never bypassable regardless of scope:** prompt injection, GoalLock canary, SSRF / DNS rebinding, blast-radius cap (unless `blast_radius:exempt`).
 
@@ -966,12 +1050,18 @@ In both cases, fetched tokens are cached per server and reused until they're clo
 
 Every time the policy is loaded (startup or hot-reload), AgentArmor audits each entry in `mcp_servers.servers[]` for known-insecure configurations and classifies findings by severity:
 
+<details>
+<summary><strong>Config-hardening severity tiers (click to expand)</strong></summary>
+<br>
+
 | Severity | Examples | Effect |
 |----------|----------|--------|
 | **critical** | URL host is `0.0.0.0`/`::` (NeighborJack-style — exposes the server to the entire local network); `..` in the URL path (path traversal) | Server is **quarantined** — `scanPayload`'s MCP zero-trust gate hard-blocks any tool call routed to it, regardless of `require_scope`, until the config is fixed and the policy is reloaded |
 | **high** | `http://` to a non-private host (brokered credentials sent unencrypted); missing `id` (can't be targeted by `mcp:<id>` scopes or quarantined individually); `auth.type: oauth2` with a `token_url` using plaintext `http://` to a non-private host | Surfaced as a finding only — not blocked |
 | **medium** | Missing/incomplete `auth` block for the configured `auth.type` — credential injection will silently be skipped; unknown `auth.type`; `auth.type: oauth2` missing `token_url`, missing the env vars required for its `grant_type`, or an unknown `grant_type` | Surfaced as a finding only |
 | **low** | No `tools` registered; no `url` configured | Informational |
+
+</details>
 
 A quarantined server degrades the **MCP Servers** scanner-status badge (never blocks all traffic — consistent with AgentArmor's "single unreachable/misconfigured server only degrades" design). Full findings and the current quarantine map are available at `GET /armor/api/mcp/audit` and rendered in the MCP Servers dashboard panel, including a "QUARANTINED" badge on the affected server entry.
 
@@ -989,6 +1079,10 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 
 ### What this maps to (from the article on AgentQ)
 
+<details>
+<summary><strong>AgentQ → AgentArmor mapping (click to expand)</strong></summary>
+<br>
+
 | AgentQ pattern | AgentArmor equivalent |
 |---|---|
 | JWT constrains which MCP tools are exposed | JWT scopes constrain which scanners fire |
@@ -996,6 +1090,8 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 | Scopes are a subset of the parent's | Enforced — child scopes must be a subset of parent scopes |
 | Transitive trust via signed credentials | HMAC-HS256 JWTs — signature verified on every request, revocation checked in memory |
 | Least privilege | No scope = most restrictive; add only what the agent specifically needs |
+
+</details>
 
 ## Roadmap
 
