@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 // WASM filter runtime — loads .wasm files from ./wasm-filters/ and runs them
@@ -45,8 +47,8 @@ type wasmInput struct {
 }
 
 type wasmOutput struct {
-	Action  string `json:"action"`  // "allow" | "block"
-	Reason  string `json:"reason"`
+	Action string `json:"action"` // "allow" | "block"
+	Reason string `json:"reason"`
 }
 
 // ─── globals ─────────────────────────────────────────────────────────────────
@@ -57,8 +59,6 @@ var (
 	wasmMu      sync.RWMutex
 	wasmEnabled bool
 )
-
-const wasmFilterDir = "wasm-filters"
 
 // ─── init ────────────────────────────────────────────────────────────────────
 
@@ -203,12 +203,12 @@ func runWASMFilters(payload, direction, sessionKey, tenantID string) (bool, stri
 
 // ─── dashboard helpers ────────────────────────────────────────────────────────
 
-func ListWASMFilters() []WASMFilter {
+func ListWASMFilters() []WASMFilterInfo {
 	wasmMu.RLock()
 	defer wasmMu.RUnlock()
-	out := make([]WASMFilter, len(wasmFilters))
+	out := make([]WASMFilterInfo, len(wasmFilters))
 	for i, f := range wasmFilters {
-		out[i] = WASMFilter{
+		out[i] = WASMFilterInfo{
 			Name:     f.Name,
 			Path:     f.Path,
 			Enabled:  f.Enabled,

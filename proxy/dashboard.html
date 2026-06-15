@@ -3350,6 +3350,54 @@ function InfraTab({stats,role}){
 }
 
 /* ═══ AGENT TOKENS TAB ═══ */
+function ProfilePanel({prof,role,onChange}){
+  const isAdmin=role==='admin';
+  const[sel,setSel]=useState('');
+  const[preview,setPreview]=useState(null);
+  const[busy,setBusy]=useState('');
+  const[msg,setMsg]=useState('');
+  useEffect(()=>{if(prof&&!sel)setSel(prof.profile);},[prof,sel]);
+  if(!prof)return null;
+  const profiles=prof.profiles||[];
+  const inp={padding:'7px 10px',background:'var(--bg)',border:'1px solid var(--b2)',borderRadius:'var(--r)',color:'var(--t1)',fontSize:12};
+  const btn=(primary)=>({padding:'7px 14px',borderRadius:'var(--r)',border:primary?'1px solid rgba(167,139,250,.4)':'1px solid var(--b2)',background:primary?'rgba(167,139,250,.1)':'transparent',color:primary?'var(--purple)':'var(--t2)',fontSize:12,fontWeight:600,cursor:'pointer'});
+  const post=(commit)=>api('profile',{method:'POST',body:JSON.stringify({profile:sel,commit})}).then(r=>r.json());
+  const doPreview=async()=>{setBusy('preview');setMsg('');try{const r=await post(false);setPreview(r.changes||[]);}catch(e){setMsg('Preview failed');}setBusy('');};
+  const doApply=async()=>{setBusy('apply');setMsg('');try{const r=await post(true);if(r.ok){setMsg('Applied & reloaded');setPreview(null);onChange&&onChange();}else setMsg(r.error||'Apply failed');}catch(e){setMsg('Apply failed');}setBusy('');};
+  return(
+    <div style={{padding:'0 24px 6px'}}>
+      <div className="section-hdr"><span className="sec-title">Deployment Profile</span>
+        <span className="sec-meta">{(prof.profile||'').toUpperCase()} active · {(prof.modules||[]).filter(m=>m.enabled).length}/{(prof.modules||[]).length} modules</span></div>
+      <p style={{fontSize:11,color:'var(--t3)',lineHeight:1.6,marginBottom:12}}>Pick a target architecture to seed the relevant scanners. Applying stamps the governed toggles to the profile baseline and hot-reloads — you can still fine-tune any individual toggle afterwards.</p>
+      {!isAdmin
+        ?<p style={{fontSize:11,color:'var(--t3)'}}>Profile switching is admin-only.</p>
+        :<>
+          <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}>
+            <select value={sel} onChange={e=>{setSel(e.target.value);setPreview(null);setMsg('');}} style={inp}>
+              {profiles.map(p=><option key={p} value={p}>{p}</option>)}
+            </select>
+            <button disabled={!!busy} onClick={doPreview} style={btn(false)}>{busy==='preview'?'…':'Preview changes'}</button>
+            <button disabled={!!busy||!preview} onClick={doApply} style={btn(true)}>{busy==='apply'?'Applying…':'Apply & reload'}</button>
+            {msg&&<span style={{fontSize:11,color:'var(--green)'}}>{msg}</span>}
+          </div>
+          {preview&&(preview.length===0
+            ?<p style={{fontSize:11,color:'var(--t3)',marginBottom:14}}>No toggle changes — config already matches <b>{sel}</b>.</p>
+            :<div style={{border:'1px solid var(--b1)',borderRadius:'var(--r)',overflow:'hidden',marginBottom:16}}>
+              <div style={{padding:'5px 12px',background:'var(--s1)',borderBottom:'1px solid var(--b2)',fontSize:9,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--t3)'}}>{preview.length} change(s) on apply</div>
+              {preview.map(c=>(
+                <div key={c.id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 12px',borderBottom:'1px solid var(--b1)',fontSize:11}}>
+                  <span style={{flex:1,color:'var(--t2)'}}>{c.label}</span>
+                  <span style={{color:c.from?'var(--green)':'var(--t3)'}}>{c.from?'on':'off'}</span>
+                  <span style={{color:'var(--t3)'}}>→</span>
+                  <span style={{color:c.to?'var(--green)':'var(--red)',fontWeight:600}}>{c.to?'on':'off'}</span>
+                </div>
+              ))}
+            </div>)}
+        </>}
+    </div>
+  );
+}
+
 function ComplianceTab({role}){
   const isAdmin=role==='admin';
   const[v,setV]=useState(null);
@@ -4082,6 +4130,7 @@ function App(){
   const[audit,setAudit]=useState([]);
   const[fw,setFw]=useState(null);
   const[skillsData,setSkillsData]=useState(null);
+  const[prof,setProf]=useState(null);
 
   useEffect(()=>{const h=e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();setCmdkOpen(o=>!o);}};window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);},[]);
   useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),4000);return()=>clearInterval(t);},[]);
@@ -4090,8 +4139,9 @@ function App(){
   const loadAudit =useCallback(()=>api('audit?limit=200').then(r=>r.json()).then(d=>setAudit(Array.isArray(d)?d:[])).catch(()=>{}),[]);
   const loadFw    =useCallback(()=>api('firewall').then(r=>r.json()).then(setFw).catch(()=>{}),[]);
   const loadSkills=useCallback(()=>api('skills').then(r=>r.json()).then(setSkillsData).catch(()=>setSkillsData(null)),[]);
+  const loadProfile=useCallback(()=>api('profile').then(r=>r.json()).then(setProf).catch(()=>{}),[]);
 
-  useEffect(()=>{if(!role)return;loadStats();loadAudit();loadFw();loadSkills();const t=setInterval(()=>{loadStats();loadSkills();},12000);return()=>clearInterval(t);},[role,loadStats,loadAudit,loadFw,loadSkills]);
+  useEffect(()=>{if(!role)return;loadStats();loadAudit();loadFw();loadSkills();loadProfile();const t=setInterval(()=>{loadStats();loadSkills();},12000);return()=>clearInterval(t);},[role,loadStats,loadAudit,loadFw,loadSkills,loadProfile]);
   useEffect(()=>{if(!role||!autoRefresh)return;const t=setInterval(()=>{loadAudit();loadStats();},refreshMs);return()=>clearInterval(t);},[role,autoRefresh,refreshMs,loadAudit,loadStats]);
 
   const recentBlocks=useMemo(()=>audit.filter(e=>e.action!=='ALLOWED').slice(0,12),[audit]);
@@ -4100,6 +4150,10 @@ function App(){
 
   /* matches AgentArmor.html window.AAData shape */
   const data=useMemo(()=>({stats,audit,fw,summary:{rate_per_sec:rps}}),[stats,audit,fw,rps]);
+
+  /* module-awareness: a module is active if the /api/profile snapshot says so */
+  const modOn=useCallback((id)=>{const m=prof?.modules?.find(x=>x.id===id);return m?m.enabled:true;},[prof]);
+  const complianceActive=useMemo(()=>!prof||modOn('compliance_audit')||modOn('compliance_pci_dlp'),[prof,modOn]);
 
   const tabs=[
     {id:'health',   num:'01',label:'Health'},
@@ -4113,7 +4167,8 @@ function App(){
     {id:'logs',     num:'09',label:'Logs'},
     {id:'infra',    num:'10',label:'Infrastructure'},
     {id:'tokens',   num:'11',label:'Agent Tokens'},
-    {id:'compliance',num:'12',label:'Compliance'},
+    /* Compliance tab only shown when the compliance engine is active for this profile */
+    ...(complianceActive?[{id:'compliance',num:'12',label:'Compliance'}]:[]),
   ];
 
   if(!role)return<Auth onAuth={r=>setRole(r)}/>;
@@ -4127,7 +4182,9 @@ function App(){
             <img src="/armor/logo.png" alt="AgentArmor" style={{width:28,height:28,borderRadius:5,display:"block"}}/>
             <span className="brand-name">AgentArmor</span>
           </div>
-          <span className="brand-env">PROD · US-EAST-1</span>
+          <span className="brand-env" title={prof?`Deployment profile: ${prof.profile} · ${prof.flavor} build — ${(prof.modules||[]).filter(m=>m.enabled).length}/${(prof.modules||[]).length} modules active`:''}>
+            {prof?`${prof.profile.toUpperCase()} PROFILE${prof.flavor&&prof.flavor!=='full'?' · '+prof.flavor.toUpperCase():''}`:'PROD · US-EAST-1'}
+          </span>
         </div>
         <div className="hdr-mid">
           <button className="kbd-hint" onClick={()=>setCmdkOpen(true)}>
@@ -4179,7 +4236,7 @@ function App(){
         {tab==='auth'     &&<AuthSettings role={role}/>}
         {tab==='tenants'  &&<TenantsTab role={role}/>}
         {tab==='logs'     &&<Logs     role={role}/>}
-        {tab==='infra'    &&<InfraTab  stats={stats} role={role}/>}
+        {tab==='infra'    &&<><ProfilePanel prof={prof} role={role} onChange={loadProfile}/><InfraTab stats={stats} role={role}/></>}
         {tab==='tokens'   &&<TokensTab role={role}/>}
         {tab==='compliance'&&<ComplianceTab role={role}/>}
       </main>

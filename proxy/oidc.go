@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 import (
@@ -21,19 +23,8 @@ import (
 )
 
 // ──────────────────────────────────────────────
-// OIDC Configuration
+// OIDC Configuration  (oidcConfig type lives in oidc_types.go — shared with lite)
 // ──────────────────────────────────────────────
-
-type oidcConfig struct {
-	Issuer        string
-	ClientID      string
-	ClientSecret  string
-	RedirectURL   string
-	AdminGroups   []string
-	UserGroups    []string
-	Scopes        []string
-	ProviderName  string
-}
 
 var (
 	oidcEnabled  bool
@@ -45,16 +36,8 @@ var (
 )
 
 // ──────────────────────────────────────────────
-// Session Store
+// Session Store  (oidcSession type lives in oidc_types.go — shared with lite)
 // ──────────────────────────────────────────────
-
-type oidcSession struct {
-	ID        string
-	Email     string
-	Name      string
-	Role      string    // "admin" | "user"
-	ExpiresAt time.Time
-}
 
 var (
 	oidcSessions     = make(map[string]*oidcSession)
@@ -204,8 +187,9 @@ func HandleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 
 // HandleOIDCCallback processes the authorisation code returned by the provider.
 // State encoding:
-//   bare nonce        → dashboard login flow (admin/user role check)
-//   "u:{return}:{nonce}" → chat-user login flow (scopes from group mapping)
+//
+//	bare nonce        → dashboard login flow (admin/user role check)
+//	"u:{return}:{nonce}" → chat-user login flow (scopes from group mapping)
 func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// Verify state (CSRF protection)
 	stateCookie, err := r.Cookie("armor_oauth_state")
@@ -361,16 +345,7 @@ func cleanupOIDCSessions() {
 // knows whether to show the SSO login button or the token field.
 // ──────────────────────────────────────────────
 
-type OIDCStatus struct {
-	Enabled      bool   `json:"enabled"`
-	LoginURL     string `json:"login_url,omitempty"`
-	LogoutURL    string `json:"logout_url,omitempty"`
-	ProviderName string `json:"provider_name,omitempty"` // e.g. "Google", "Okta", "Microsoft"
-	ProviderType string `json:"provider_type,omitempty"` // google | microsoft | okta | auth0 | generic
-	Email        string `json:"email,omitempty"`
-	Name         string `json:"name,omitempty"`
-	Role         string `json:"role,omitempty"`
-}
+// OIDCStatus type lives in oidc_types.go (shared with the lite stub).
 
 // detectProvider infers a human-readable name and a type slug from the issuer URL.
 func detectProvider(issuer string) (name, ptype string) {

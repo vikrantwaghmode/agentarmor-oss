@@ -42,6 +42,9 @@ services:
 
   presidio-analyzer:
     image: mcr.microsoft.com/presidio-analyzer:latest
+    # Only started for profiles that use it (skipped for `edge`). Controlled by
+    # COMPOSE_PROFILES in .env — keep it in sync with policy.yaml's `profile:`.
+    profiles: ["gateway", "enterprise", "compliance"]
     ports:
       - "3000:3000"
     healthcheck:
@@ -54,6 +57,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    profiles: ["gateway", "enterprise", "compliance"]
     ports:
       - "11434:11434"
     volumes:
@@ -70,6 +74,7 @@ services:
   # so this is instant on every restart after the first download.
   ollama-pull:
     image: ollama/ollama:latest
+    profiles: ["gateway", "enterprise", "compliance"]
     volumes:
       - ollama_data:/root/.ollama
     environment:

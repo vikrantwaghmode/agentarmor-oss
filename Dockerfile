@@ -38,8 +38,18 @@ COPY proxy/ ./proxy/
 COPY policy.yaml ./proxy/policy.yaml
 
 WORKDIR /src/proxy
+# Build flavor: "full" (default, everything) or "lite" (core L7 firewall only —
+# compiles out the compliance engine, dropping blake3/fpdf and a smaller, lower-
+# attack-surface binary). Selected via the `lite` build tag. Both the !lite
+# wiring files and the lite stub are listed; go build honors the tag and
+# includes exactly one set.
+ARG ARMOR_FLAVOR=full
+# Build the whole package directory (not an explicit file list) so //go:build
+# tags are honored — the explicit-list form ignores build constraints and would
+# compile both the !lite wiring and the lite stub together.
 RUN go mod tidy \
-    && CGO_ENABLED=1 GOOS=linux go build -o /agentarmor-proxy ./main.go ./skills.go ./skillscan.go ./execscan.go ./datasensitivity.go ./oidc.go ./tenants.go ./secrets.go ./metrics.go ./redis.go ./acme.go ./infra.go ./wasm.go ./otel.go ./export.go ./tokens.go ./usersession.go ./loginhandler.go ./scannercheck.go ./atr.go ./docconv.go ./mcpbroker.go ./auditchain.go ./hitlchain.go ./dlpchain.go ./reportchain.go \
+    && if [ "$ARMOR_FLAVOR" = "lite" ]; then TAGS="lite"; else TAGS=""; fi \
+    && CGO_ENABLED=1 GOOS=linux go build -tags "$TAGS" -o /agentarmor-proxy . \
     && CGO_ENABLED=0 GOOS=linux go build -o /agentarmor-firewall ./cmd/firewall
 
 # --- Stage 3: Final runtime ---

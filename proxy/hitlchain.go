@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 // Wiring for the Verifiable Human-in-the-Loop escalation matrix (Compliance

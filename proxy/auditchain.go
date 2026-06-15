@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 // Wiring for the cryptographic audit logging engine (Compliance Phase 1).
@@ -134,3 +136,7 @@ func closeComplianceAudit() {
 		_ = complianceAudit.Close()
 	}
 }
+
+// complianceAuditActive reports whether the sealed audit log is running
+// (consumed by the module registry; stubbed in the lite flavor).
+func complianceAuditActive() bool { return complianceAudit != nil }

@@ -287,12 +287,9 @@ doc_conversion:
   max_file_size_mb: 20             # uploads larger than this pass through unconverted
   timeout_seconds: 30              # per-file conversion timeout
 
-# MCP Server Registry & Credential Brokering (Zero-Trust MCP)
-# Register MCP servers and the tool names they own. When an agent's tool call
-# ({"tool":"...","args":{...}}) targets a registered tool, AgentArmor injects
-# a resolved credential into args before forwarding — agents never hold the
-# real MCP server credentials. Credential VALUES live only in env vars
-# (populate via your secrets vault), never in policy.yaml.
+# MCP Server Registry & Credential Brokering (Zero-Trust MCP).
+# See "MCP credential brokering" below for how registration, scope gating, and
+# brokered-credential injection work. Credential VALUES live only in env vars.
 mcp_servers:
   enabled: false
   require_scope: true              # require mcp:any / mcp:<id> scope to call registered tools
@@ -307,10 +304,7 @@ mcp_servers:
         token_env: GITHUB_MCP_TOKEN # env var holding the token
         value_prefix: "Bearer "     # default for type: bearer
 
-# Skill behavioral-intent scanning & quarantine (supply-chain defense)
-# Every skill in ./skills/<id>/ (system prompt, keywords, description, and
-# knowledge/*.md) is scanned against these patterns on each policy load.
-# A "critical" finding quarantines the skill when block_critical is true.
+# Skill behavioral-intent scanning & quarantine — see the Phase 2.1 section below.
 skill_scanning:
   enabled: true
   block_critical: true
@@ -326,11 +320,7 @@ skill_scanning:
       regex: '(?i)(ignore (all |any )?(previous|prior|above) instructions|disregard (your|the) system prompt|do not (tell|inform|notify) the user)'
       description: "Embedded prompt-injection / jailbreak directive aimed at the orchestrating agent"
 
-# Execution Containment Scanner (proxy-realistic "deep isolation hooks")
-# Scans the args of configured tool calls (default: exec) for container-escape,
-# destructive-filesystem, and firewall-tamper patterns. A "critical" finding
-# hard-blocks the call even for a session holding Zero-Trust tool:exec approval —
-# high/medium findings are alerted but not blocked.
+# Execution Containment Scanner — see the Phase 3.1 section below.
 execution_scanning:
   enabled: true
   tools: [exec]                      # tool names whose args are scanned
@@ -351,10 +341,7 @@ execution_scanning:
       regex: '(?i)(iptables\s+(-F|-X|--flush)|ip6tables\s+(-F|-X|--flush)|agentarmor-firewall)'
       description: "Attempts to flush or disable AgentArmor's egress firewall"
 
-# Data-Sensitivity-Aware Execution Grants (proxy-realistic "governed execution")
-# Classifies a high-risk tool call's args; a match scopes the Zero-Trust
-# approval to "this tool against THIS target" (sha256 of args) and expires it
-# after grant_ttl_minutes — instead of "approve the tool once for the session".
+# Data-Sensitivity-Aware Execution Grants — see the Phase 4.1 section below.
 data_sensitivity:
   enabled: true
   grant_ttl_minutes: 10              # 0 = grants for matched targets never expire
@@ -506,6 +493,40 @@ AgentArmor is a single stateless binary that fits into any enterprise topology. 
 | All of the above (phased rollout) | Start with 1 → migrate to 3 → decompose to 4 |
 
 All patterns use the same Docker image and the same `policy.yaml` schema — you change the infrastructure around AgentArmor, not AgentArmor itself.
+
+### Deployment profiles & build flavors
+
+Rather than hand-tune ~20 feature toggles, pick a **profile** that seeds the relevant ones, and optionally a leaner **build flavor**.
+
+**Runtime profiles** — set `profile:` at the top of `policy.yaml` (or switch live from the dashboard's Infrastructure tab, with a preview of exactly which scanners flip):
+
+| `profile:` | Seeds | For |
+|---|---|---|
+| `edge` | core scanners + rate limiting + ATR | minimal inline firewall in front of any LLM/MCP endpoint |
+| `gateway` | + risk/anomaly scoring, zero-trust approvals, MCP brokering, skill/exec/data-sensitivity scanning, RAG | the bundled agent gateway (default) |
+| `enterprise` | + SSO, agent routing, threat feeds, Presidio | multi-team / scaled |
+| `compliance` | core + zero-trust + data-sensitivity + Presidio (pair with the compliance engine) | regulated (GDPR/HIPAA/PCI/SOC 2/ISO/EU AI Act) |
+| `custom` | nothing — you drive every toggle | hand-tuned setups |
+
+The profile is a **baseline**: it seeds defaults *before* your `policy.yaml` is applied, so any explicit key you set always wins. Switching a profile in the dashboard stamps the governed toggles to that baseline and hot-reloads (snapshotted for rollback). An absent or `custom` profile changes nothing — existing policies are unaffected. The active profile + per-module status is at `GET /armor/api/profile`.
+
+**Build flavors** — a compile-time choice for binary size / attack surface:
+
+| Flavor | Build | Includes |
+|---|---|---|
+| `full` (default) | `docker compose build` | everything — compliance engine (BLAKE3 audit log, HITL, PCI/OCR, reporting) + WASM filter runtime |
+| `lite` | `docker compose build --build-arg ARMOR_FLAVOR=lite` | core L7 firewall only — compiles out the compliance engine and WASM runtime, dropping the `blake3`, `fpdf`, and `wazero` dependencies (~5.5 MB smaller, smaller attack surface) |
+
+The flavor is reported in `GET /armor/api/profile` and shown in the dashboard header (`EDGE PROFILE · LITE`). In the `lite` build the `/armor/api/compliance/*` endpoints return `{"enabled":false,"flavor":"lite"}`.
+
+**Sidecars per profile** — the runtime `profile:` controls *which scanners run*; `COMPOSE_PROFILES` (in `.env`) controls *which sidecar containers start*. Keep them in sync:
+
+```bash
+COMPOSE_PROFILES=gateway   # default — starts ollama + presidio
+COMPOSE_PROFILES=edge      # minimal — starts only the agentarmor proxy, no sidecars
+```
+
+`docker compose --profile edge up` brings up just the proxy (no Ollama/Presidio), matching the `edge` runtime profile; the default `gateway` starts the full sidecar set, so existing deployments are unaffected.
 
 ---
 
@@ -979,37 +1000,16 @@ If any check fails, the call is hard-blocked as **unverified task propagation** 
 ## Roadmap
 
 ### Recently shipped
-- [x] **Scanner Gate** — all chat and API traffic blocked until every enabled scanner is operational; loading page with live status badges; LLM scanner warm-up on startup prevents cold-start circuit-breaker loops
-- [x] **Expanded prompt injection rules** — 100+ rules across 6 categories: jailbreaks, system prompt extraction, indirect/delayed injection, false authority/privilege escalation, social engineering, and data exfiltration; structural regex patterns (authority-claim + data-demand) catch paraphrasing variants; per-rule `allow_scopes` for authenticated users who have proven their role
-- [x] **LLM scanner reliability** — upgraded to `llama3.2:3b` at confidence 0.85; warm-up goroutine pre-loads the model into memory on startup (120s budget); circuit breaker surfaced to scanner gate so blocked traffic stays blocked while Ollama recovers
-- [x] **SSO / OIDC** — Google, Microsoft, Okta, Auth0, Keycloak; live-configurable from the Auth tab without restart
-- [x] **Multi-tenancy** — Isolated policies, tokens, audit logs, and rate limits per team/application; routed via `X-Tenant-ID` header or Bearer token
-- [x] **Secrets vault / KMS** — HashiCorp Vault (token or AppRole), AWS Secrets Manager (static creds or EC2 IMDSv2), GCP Secret Manager (service account or GCE metadata), Azure Key Vault (service principal or managed identity); zero new Go dependencies
-- [x] **High availability** — PostgreSQL audit log + Redis distributed rate limiting; proxy is now stateless and horizontally scalable
-- [x] **Prometheus metrics** — `/armor/metrics` endpoint with request counters, scanner rule counts, goroutines, heap usage
-- [x] **Cert auto-renewal** — ACME / Let's Encrypt with HTTP-01 challenge; auto-renews before expiry
-- [x] **Infrastructure dashboard (tab 10)** — configure PostgreSQL, Redis, ACME, and metrics token from the UI; hot-reload where possible; restart dialog ("now or later") for settings that need a container restart; Restart System button with auto-reload
 
-### Recently shipped (continued)
-- [x] **WASM filters** — Drop `.wasm` files into `./wasm-filters/`; runs after all built-in scanners; WASI stdin/stdout ABI works with Go, Rust, C, AssemblyScript; enable/disable/reload from Infrastructure tab without restart
-- [x] **OpenTelemetry traces** — Minimal OTLP/HTTP emitter (zero new Go deps); one span per HTTP request + scan child span; compatible with Jaeger, Grafana Tempo, Honeycomb, Datadog Agent; `X-Trace-ID` in response headers
+A condensed changelog — each item is detailed in the [Features](#features) table and its section above.
 
-- [x] **Helm chart** — `helm/agentarmor/` — values for single, HA (PostgreSQL + Redis + HPA), sidecar, and ACME patterns; supports `existingSecret`, custom policy/firewall ConfigMaps, OIDC, OTel, and all secrets providers
-- [x] **Audit log export** — `⬇ Export` dropdown in the Audit Log tab; CSV or NDJSON; row-limit options (1k / 10k / all rows); active filter preserved; admin-only; streams as a browser download
-
-- [x] **Helm OCI registry** — chart published to `ghcr.io/vikrantwaghmode/agentarmor` via GitHub Actions on every release tag; `helm install oci://ghcr.io/vikrantwaghmode/agentarmor --version x.y.z`
-- [x] **Audit date-range filter** — `From` / `To` datetime-local pickers in the export dropdown; filters passed as RFC3339 `?from=` / `?to=` params; active date range shown in the filter summary strip
-- [x] **Context-aware ABAC / agent tokens** — scoped JWTs gate every scanner; ephemeral child tokens for dynamic multi-agent systems; `POST /armor/api/tokens/spawn` for parent→child issuance with scope subsetting; cascading revocation; `agent_routing` policy for approved call patterns
-- [x] **ATR rules (459 rules)** — full [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) corpus baked in; native Go engine evaluates all six detection operators with AND/OR/NOT logic; field-to-direction mapping (user_input → inbound, agent_output → outbound); enable/disable and severity filtering from the dashboard
-- [x] **Document conversion (doc2md)** — PDF/Word/Excel/PowerPoint uploads converted to Markdown via [doc2md](https://github.com/vikrantwaghmode/doc2md) before scanning & forwarding; closes the binary-upload DLP/injection bypass (documents previously skipped every text-based scanner) and cuts LLM token usage; configurable size/timeout limits, enable/disable from the dashboard
-- [x] **MCP Server Registry & Credential Brokering (Zero-Trust MCP, v1)** — register MCP servers and the tools they own; AgentArmor resolves `{"tool":...,"args":...}` calls against the registry and injects a brokered credential (bearer/basic/header) into `args` so agents never hold real MCP server credentials; optional `mcp:any` / `mcp:<server-id>` scope gate blocks unauthorized tool calls before they're forwarded; live reachability badge on the dashboard
-- [x] **MCP Config-Hardening Scanner & Quarantine (Zero-Trust MCP, Phase 1.3)** — every policy load audits `mcp_servers.servers[]` for insecure configs (binds to `0.0.0.0`/`::`, path traversal in URLs, plaintext `http://` to public hosts, broken credential-brokering setups); critical findings auto-quarantine the server, hard-blocking tool calls routed to it; quarantine degrades the MCP Servers status badge; full findings via `GET /armor/api/mcp/audit` and a new dashboard panel
-- [x] **MCP Context Binding (Zero-Trust MCP, Phase 1.2)** — every brokered credential injection mints a short-lived, HMAC-signed `_mcp_context_token` binding the call to its session/tenant; a later tool call carrying a context token (e.g. forwarded by the agent to authorize a chained call) must verify for the same session or is hard-blocked as unverified task propagation — closes the "confused deputy" gap where Server A's response could trick the agent into invoking Server B with a stolen context
-- [x] **MCP Dynamic OAuth2 Token Brokering (Zero-Trust MCP, Phase 1.1)** — `auth.type: oauth2` fetches short-lived access tokens from the IdP's token endpoint (`client_credentials` or `refresh_token` grant) instead of injecting a static `token_env` PAT; tokens are cached per server and auto-refreshed via `golang.org/x/oauth2`, with the cache cleared on every policy reload; config-hardening audit validates `token_url` and grant-type-specific env vars and flags plaintext `http://` token endpoints
-- [x] **Skill Behavioral-Intent Scanner & Quarantine (Supply-Chain Defense, Phase 2.1)** — every policy load scans each skill's system prompt, keywords, description, and knowledge docs for "dual-vector" toxic-skill indicators (embedded prompt-injection directives, pipe-to-shell, base64-decode-exec, credential-file exfiltration, destructive commands); critical findings auto-quarantine the skill — removed from header/marker/keyword/semantic detection and its content withheld until fixed and the policy is reloaded; findings via `GET /armor/api/skills` and a new Skills-tab audit panel with quarantine badges
-- [x] **Execution Containment Scanner (Phase 3.1)** — scans the `args` of configured tool calls (default: `exec`) for container-escape, destructive-filesystem, and firewall-tamper patterns; critical findings hard-block the call (`EXEC_BLOCK`) even for sessions holding Zero-Trust `tool:exec` approval — closing the "may run exec at all" vs "may run *this* command" gap; high/medium findings (credential-file access, path traversal, privilege escalation, pipe-to-shell) raise `EXEC_ALERT` without blocking; configurable via `execution_scanning.patterns`
-- [x] **Data-Sensitivity-Aware Execution Grants (Phase 4.1)** — classifies a high-risk tool call's `args` against `data_sensitivity.patterns` (credential files, production resources, destructive SQL, sensitive system paths); a match narrows the Zero-Trust approval from per-*(session, tool)* to per-*(session, tool, target fingerprint)* and time-boxes it via `grant_ttl_minutes` — so approving `exec` against a temp file never silently blesses a later `exec` against `/etc/shadow`, and grants to sensitive targets expire; the proxy-realistic stand-in for "Governed Execution" (no PDG/type-system, which belong to a different project); approval requests show target fingerprint + matched-pattern reason in the Repave tab
-- [x] **Unified branding & in-chat security widget** — the AgentArmor logo is served from a single embedded `/armor/logo.png` endpoint and used as the favicon and brand mark across the dashboard, login, and loading pages; a brief branded splash plays on chat load; the proxy injects an expandable status widget into the OpenClaw chat UI (bottom-right) — a compact badge showing live `N/M` scanner health that expands on click to the full per-scanner badge grid and a dashboard link. Because OpenClaw ships a strict `script-src 'self'` CSP, the proxy mints a per-response nonce, tags its injected scripts with it, and adds `'nonce-…'` to the page's `script-src` — unblocking only AgentArmor's own helpers without weakening the page with a blanket `'unsafe-inline'`
+- **Core scanning** — scanner-readiness gate · 100+ prompt-injection rules (6 categories) · LLM scanner (`llama3.2:3b`) · ATR corpus (459 rules) · WASM filters · document conversion (doc2md)
+- **Identity & access** — SSO/OIDC (Google/Microsoft/Okta/Auth0/Keycloak) · multi-tenancy · context-aware ABAC + ephemeral spawn-chain agent tokens · agent routing
+- **Zero-Trust MCP** — credential brokering · dynamic OAuth2 (1.1) · context binding / confused-deputy prevention (1.2) · config-hardening quarantine (1.3)
+- **Supply chain & execution** — skill behavioral-intent scanning (2.1) · execution containment (3.1) · data-sensitivity-aware grants (4.1)
+- **Enterprise compliance** — BLAKE3 sealed audit log · verifiable HITL · PCI deep inspection + OCR · automated reporting mapped to 8 frameworks (ISO 42001, SOC 2, GDPR, HIPAA, PCI DSS, ISO 27001, NIST AI RMF, EU AI Act) → PDF/Word
+- **Ops** — secrets vault/KMS (Vault/AWS/GCP/Azure) · HA (PostgreSQL + Redis) · Prometheus metrics · OpenTelemetry traces · ACME auto-renewal · Helm chart (OCI) · audit export (CSV/NDJSON, date range)
+- **Packaging** — deployment profiles (`edge`/`gateway`/`enterprise`/`compliance`) + compile-time `lite` build flavor
 
 ### Upcoming
 - [ ] **Diff viewer** — side-by-side policy snapshot comparison before restoring
@@ -1035,9 +1035,27 @@ Document conversion is powered by [doc2md](https://github.com/vikrantwaghmode/do
 
 ## Contributing
 
-Open an issue first to discuss changes or reachout to vikrant.waghmode@gmail.com
+Contributions are welcome — please **open an issue first** to discuss anything non-trivial so we can align on approach before you invest time.
 
-LinkedIn: https://www.linkedin.com/in/securityhandyman/
+**Local development**
+
+```bash
+git clone https://github.com/vikrantwaghmode/agentarmor-oss && cd agentarmor-oss
+cd proxy
+go build ./...          # full flavor (default)
+go build -tags lite ./...   # lite flavor (no compliance/WASM)
+go test ./...           # run the suite
+gofmt -l . && go vet ./...  # must be clean before a PR
+```
+
+**Good first contributions**
+- New `policy.yaml` scanner rules (prompt-injection, malicious-content, PII, secrets) — pure data, no Go needed.
+- WASM filters in `./wasm-filters/` (any WASI language) — see `wasm-filters/README.md`.
+- ATR rules — contribute upstream at [Agent-Threat-Rule/agent-threat-rules](https://github.com/Agent-Threat-Rule/agent-threat-rules).
+
+**Pull requests** — keep them focused, include `go test`/`go vet`/`gofmt` clean output, and update the README/`policy.yaml` example when you add a config-visible feature. Security-sensitive changes (auth, egress, the scan pipeline) should explain the threat model in the PR description.
+
+Questions or commercial/partnership inquiries: vikrant.waghmode@gmail.com · [LinkedIn](https://www.linkedin.com/in/securityhandyman/)
 
 ## License
 

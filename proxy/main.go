@@ -88,6 +88,10 @@ type Rule struct {
 }
 
 type Config struct {
+	// Profile selects a deployment architecture (edge | gateway | enterprise |
+	// compliance | custom) whose baseline toggles are seeded before this policy
+	// is applied. Absent/custom = no seeding (see profiles.go).
+	Profile  string `yaml:"profile,omitempty" json:"profile,omitempty"`
 	Scanners struct {
 		PromptInjection struct {
 			Enabled        bool   `yaml:"enabled" json:"enabled"`
@@ -1572,6 +1576,13 @@ func loadPolicy() {
 	}
 
 	var newPolicy Config
+	// Seed the profile baseline FIRST (no-op for custom/absent), then unmarshal
+	// the operator's policy on top so any explicit key overrides the baseline.
+	var pre struct {
+		Profile string `yaml:"profile"`
+	}
+	_ = yaml.Unmarshal(data, &pre)
+	applyProfileDefaults(&newPolicy, Profile(pre.Profile))
 	if err := yaml.Unmarshal(data, &newPolicy); err != nil {
 		// During hot-reload keep the active policy rather than crashing.
 		// compiledSecretRegexes being non-nil means a policy has already been loaded once.
@@ -3000,10 +3011,9 @@ func scanPayload(payload string, direction string, sessionKey string, tnt *Tenan
 	// Composes with the secrets redactor above: masks Primary Account Numbers
 	// (last-4 retained) and fully purges Sensitive Authentication Data on both
 	// the request (L1) and response (L6) paths, before forwarding/logging.
-	if complianceDLPEnabled {
-		if det := complianceInspector.Inspect(contentToScan); det.Found() {
+	if pciEnabled() {
+		if found, reason := pciScan(contentToScan); found {
 			result.Redacted = true
-			reason := dlpReason(det)
 			if result.RuleMatched == "" {
 				result.RuleMatched = reason
 			} else {
@@ -3234,6 +3244,60 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 			"findings":    findings,
 			"quarantined": quarantined,
 		})
+
+	// GET /armor/api/profile — active deployment profile + live module status
+	case endpoint == "profile" && r.Method == http.MethodGet:
+		policyLock.RLock()
+		snap := snapshotProfile(&policy)
+		policyLock.RUnlock()
+		json.NewEncoder(w).Encode(snap)
+
+	// POST /armor/api/profile — preview (commit:false) or apply (commit:true) a
+	// deployment-profile switch. Applying stamps the governed toggles to the
+	// profile baseline, persists policy.yaml (with snapshot), and hot-reloads.
+	case endpoint == "profile" && r.Method == http.MethodPost:
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Profile string `json:"profile"`
+			Commit  bool   `json:"commit"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		p := Profile(body.Profile)
+		if !knownProfile(p) && p != ProfileCustom {
+			http.Error(w, `{"error":"unknown profile"}`, http.StatusBadRequest)
+			return
+		}
+		policyLock.RLock()
+		changes := profileDiff(&policy, p)
+		cfgCopy := policy // shallow copy; stamp only mutates scalar fields
+		policyLock.RUnlock()
+
+		if !body.Commit {
+			json.NewEncoder(w).Encode(map[string]interface{}{"profile": body.Profile, "changes": changes})
+			return
+		}
+		stampProfile(&cfgCopy, p)
+		out, err := yaml.Marshal(cfgCopy)
+		if err != nil {
+			http.Error(w, `{"error":"yaml marshal failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile("policy.yaml", out, 0644); err != nil {
+			http.Error(w, `{"error":"write failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := saveSnapshot("profile switch: " + body.Profile); err != nil {
+			log.Printf("⚠️  Policy snapshot failed: %v", err)
+		}
+		loadPolicy() // re-read, recompile, re-apply consistently
+		logAuditEvent("", "", "System", "PROFILE_SWITCH", "Deployment profile set to "+body.Profile, "")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "applied": changes})
 
 	// GET /armor/api/compliance/verify — cryptographic integrity status
 	case endpoint == "compliance/verify" && r.Method == http.MethodGet:

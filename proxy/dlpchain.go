@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 // Wiring for deep data inspection / payment-data masking (Compliance Phase 3,
@@ -69,4 +71,22 @@ func dlpReason(r datainspect.Result) string {
 // maskPaymentData masks PAN/SAD in a single content string (used per-message).
 func maskPaymentData(content string) string {
 	return complianceInspector.Inspect(content).Masked
+}
+
+// ── Facade consumed by main.go / profiles.go (stubbed in the lite flavor) ──
+
+// pciEnabled reports whether deep data inspection is active.
+func pciEnabled() bool { return complianceDLPEnabled }
+
+// complianceDLPActive mirrors pciEnabled for the module registry.
+func complianceDLPActive() bool { return complianceDLPEnabled }
+
+// pciScan inspects content for payment data, returning whether any was found
+// and a count/brand audit reason (never the values).
+func pciScan(content string) (bool, string) {
+	det := complianceInspector.Inspect(content)
+	if !det.Found() {
+		return false, ""
+	}
+	return true, dlpReason(det)
 }

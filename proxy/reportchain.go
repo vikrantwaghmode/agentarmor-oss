@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 // Wiring for the Autonomous Compliance Reporting engine (Compliance Phase 4 —
