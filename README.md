@@ -1131,7 +1131,9 @@ Document conversion is powered by [doc2md](https://github.com/vikrantwaghmode/do
 
 ## Contributing
 
-Contributions are welcome — please **open an issue first** to discuss anything non-trivial so we can align on approach before you invest time.
+Contributions are welcome — please **open an issue first** to discuss anything non-trivial so we can align on approach before you invest time. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+> **Contributor License Agreement required.** Before your first PR is merged you must sign the [CLA](CLA.md) — a bot will prompt you on the PR. By signing you assign the copyright in your contribution to the maintainer (so AgentArmor can be licensed commercially in future) and keep a license to reuse your own code; a contribution is a voluntary gift with **no claim to payment, equity, or a share of monetization**.
 
 **Local development**
 
