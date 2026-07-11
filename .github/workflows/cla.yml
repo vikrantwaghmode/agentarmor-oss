@@ -38,4 +38,4 @@ jobs:
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA ✍️ ✅'
           # Accounts that never need to sign (maintainer + bots):
-          allowlist: vikrantwaghmode,dependabot[bot],bot*
+          allowlist: vikrantwaghmode,dependabot[bot],bot*,google-labs-jules[bot]
