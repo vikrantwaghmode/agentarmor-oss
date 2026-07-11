@@ -1289,7 +1289,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     placeholder="SIEM name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{wh.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
+              {isAdmin&&<button aria-label="Remove webhook" onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
             </div>
             {/* Fields */}
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
@@ -1375,7 +1375,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     placeholder="Feed name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{feed.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
+              {isAdmin&&<button aria-label="Remove feed" onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
             </div>
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
               <CfgRow label="URL" sub="Must serve the AgentArmor feed JSON format">
@@ -3556,7 +3556,7 @@ function TokensTab({role}){
           border:'1px solid rgba(74,222,128,.3)',borderRadius:'var(--r)'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
             <span style={{fontSize:12,fontWeight:700,color:'var(--green)'}}>✓ Token issued for {newToken.agent_id}</span>
-            <button onClick={()=>setNewToken(null)} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:16}}>✕</button>
+            <button aria-label="Close token" onClick={()=>setNewToken(null)} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:16}}>✕</button>
           </div>
           <div style={{padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--r)',
             fontFamily:'var(--mono)',fontSize:11,color:'var(--t2)',wordBreak:'break-all',marginBottom:8}}>
@@ -4202,7 +4202,7 @@ function App(){
             <span className="status-sep">·</span>
             <span>{rps}/s</span>
           </div>
-          <button className="notif-btn" title="Notifications">🔔</button>
+          <button aria-label="Notifications" className="notif-btn" title="Notifications">🔔</button>
           <div className="user">
             <span className="user-avatar">OP</span>
             <span>ops@armor</span>
