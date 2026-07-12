@@ -1,0 +1,3 @@
+## 2024-07-12 - Accessibility Improvements for Icon-only Buttons & Focus States
+**Learning:** Found a pattern of missing `aria-label`s on icon-only buttons (like notifications, remove, and delete buttons) across the dashboard, reducing screen reader accessibility. Additionally, the application lacked global `:focus-visible` styling, hindering keyboard navigation for users relying on visual focus indicators.
+**Action:** Implemented `aria-label`s on critical icon-only buttons and added global `:focus-visible` CSS rules. In future development, ensure all icon-only buttons include descriptive `aria-label`s and that keyboard focus states are always visible.
