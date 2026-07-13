@@ -1289,7 +1289,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     placeholder="SIEM name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{wh.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
+              {isAdmin&&<button aria-label="Remove webhook" onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
             </div>
             {/* Fields */}
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
@@ -1375,7 +1375,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     placeholder="Feed name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{feed.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
+              {isAdmin&&<button aria-label="Remove feed" onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
             </div>
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
               <CfgRow label="URL" sub="Must serve the AgentArmor feed JSON format">
@@ -4202,7 +4202,7 @@ function App(){
             <span className="status-sep">·</span>
             <span>{rps}/s</span>
           </div>
-          <button className="notif-btn" title="Notifications">🔔</button>
+          <button className="notif-btn" title="Notifications" aria-label="Notifications">🔔</button>
           <div className="user">
             <span className="user-avatar">OP</span>
             <span>ops@armor</span>
