@@ -1,0 +1,3 @@
+## 2024-05-14 - Interactive custom toggles using non-semantic elements
+**Learning:** Found multiple instances where the custom `.sq-toggle` component was implemented using `<div>` tags instead of `<button>` tags. This prevents keyboard users from focusing and interacting with the switch and prevents screen readers from announcing its state (checked/unchecked).
+**Action:** Replaced all `<div>` implementations of `.sq-toggle` with `<button type="button">` and added `role="switch"` and dynamic `aria-checked` attributes to ensure they are accessible via keyboard navigation and properly announced by screen readers.
