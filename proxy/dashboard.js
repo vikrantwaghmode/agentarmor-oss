@@ -444,7 +444,7 @@ function SSOConfig({isAdmin}){
       <div className="tag-list">
         {(cfg[field]||[]).map(g=>(
           <span key={g} className="tag">{g}
-            {isAdmin&&<span className="tag-del" onClick={()=>removeGroup(field,g)}>✕</span>}
+            {isAdmin&&<button type="button" className="tag-del" onClick={()=>removeGroup(field,g)} style={{background:'none',border:'none',padding:0,font:'inherit'}} title="Remove group" aria-label="Remove group">✕</button>}
           </span>
         ))}
         {!(cfg[field]||[]).length&&<span style={{fontSize:11,color:'var(--t3)'}}>None — any authenticated user gets user role</span>}
@@ -464,7 +464,7 @@ function SSOConfig({isAdmin}){
     <div className="posture-block" style={{marginBottom:1}}>
       <div className="posture-hdr" onClick={()=>setOpen(o=>!o)}>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
-          {isAdmin&&<div className={`sq-toggle ${cfg.enabled?'on':''}`}
+          {isAdmin&&<button type="button" role="switch" aria-checked={cfg.enabled} className={`sq-toggle ${cfg.enabled?'on':''}`}
             onClick={e=>{e.stopPropagation();set('enabled',!cfg.enabled);}}/>}
           {!isAdmin&&<span className="status-dot" style={{background:cfg.enabled?'var(--green)':'var(--muted)'}}/>}
           <span className="posture-name">SSO / OIDC</span>
@@ -631,7 +631,7 @@ function GroupScopeMappingEditor({cfg,setCfg,setDirty,isAdmin}){
         border:`1px solid ${def?.danger?'rgba(239,68,68,.3)':'rgba(74,222,128,.25)'}`,
         color:def?.danger?'var(--red)':'var(--green)'}}>
         {s}
-        {removable&&isAdmin&&<span onClick={onRemove} style={{cursor:'pointer',opacity:.7,marginLeft:2}}>✕</span>}
+        {removable&&isAdmin&&<button type="button" onClick={onRemove} style={{cursor:'pointer',opacity:.7,marginLeft:2,background:'none',border:'none',color:'inherit',padding:0,font:'inherit'}} title="Remove tag" aria-label="Remove tag">✕</button>}
       </span>
     );
   };
@@ -745,7 +745,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
 
   const Toggle=({path,checked,top})=>(
     isAdmin
-      ?<div className={`sq-toggle ${checked?'on':''}`} onClick={()=>top?setTopField(path,!checked):setField(path,!checked)} style={{cursor:'pointer'}}/>
+      ?<button type="button" role="switch" aria-checked={checked} className={`sq-toggle ${checked?'on':''}`} onClick={()=>top?setTopField(path,!checked):setField(path,!checked)} style={{cursor:'pointer'}}/>
       :<span className="ro-val">{checked?'enabled':'disabled'}</span>
   );
 
@@ -840,7 +840,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
             {(sc.zero_trust_tools?.high_risk_tools||[]).map(t=>(
               <span key={t} className="tag">
                 {t}
-                {isAdmin&&<span className="tag-del" onClick={()=>removeTool(t)}>✕</span>}
+                {isAdmin&&<button type="button" className="tag-del" onClick={()=>removeTool(t)} style={{background:'none',border:'none',padding:0,font:'inherit'}} title="Remove tool" aria-label="Remove tool">✕</button>}
               </span>
             ))}
           </div>
@@ -932,14 +932,14 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
           <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:10,overflow:'hidden'}}>
             {/* Header row */}
             <div style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
-              <div className={`sq-toggle ${wh.enabled?'on':''}`} onClick={()=>isAdmin&&setWebhookField(idx,'enabled',!wh.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              <button type="button" role="switch" aria-checked={wh.enabled} className={`sq-toggle ${wh.enabled?'on':''}`} onClick={()=>isAdmin&&setWebhookField(idx,'enabled',!wh.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
               {isAdmin
                 ?<input value={wh.name||''} onChange={e=>setWebhookField(idx,'name',e.target.value)}
                     style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
                     placeholder="SIEM name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{wh.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove">✕</button>}
+              {isAdmin&&<button onClick={()=>removeWebhook(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove SIEM destination" aria-label="Remove SIEM destination">✕</button>}
             </div>
             {/* Fields */}
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
@@ -982,7 +982,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     :<span className="ro-val">{wh.timeout_ms||3000}</span>}
                 </CfgRow>
                 <CfgRow label="Include payload" sub="">
-                  <div className={`sq-toggle ${wh.include_payload?'on':''}`}
+                  <button type="button" role="switch" aria-checked={wh.include_payload} className={`sq-toggle ${wh.include_payload?'on':''}`}
                     onClick={()=>isAdmin&&setWebhookField(idx,'include_payload',!wh.include_payload)}
                     style={{cursor:isAdmin?'pointer':'default'}}/>
                 </CfgRow>
@@ -1018,14 +1018,14 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         {(pol?.threat_feeds?.feeds||[]).map((feed,idx)=>(
           <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:8,overflow:'hidden'}}>
             <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
-              <div className={`sq-toggle ${feed.enabled?'on':''}`} onClick={()=>isAdmin&&setFeedField(idx,'enabled',!feed.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              <button type="button" role="switch" aria-checked={feed.enabled} className={`sq-toggle ${feed.enabled?'on':''}`} onClick={()=>isAdmin&&setFeedField(idx,'enabled',!feed.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
               {isAdmin
                 ?<input value={feed.name||''} onChange={e=>setFeedField(idx,'name',e.target.value)}
                     style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
                     placeholder="Feed name…"/>
                 :<span style={{flex:1,fontSize:12,fontWeight:600,color:'var(--t1)'}}>{feed.name||'Unnamed'}</span>
               }
-              {isAdmin&&<button onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}}>✕</button>}
+              {isAdmin&&<button onClick={()=>removeFeed(idx)} style={{fontSize:11,color:'var(--t3)',cursor:'pointer',padding:'2px 6px',border:'1px solid var(--b2)',borderRadius:'var(--r)',background:'transparent'}} title="Remove intelligence feed" aria-label="Remove intelligence feed">✕</button>}
             </div>
             <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
               <CfgRow label="URL" sub="Must serve the AgentArmor feed JSON format">
@@ -1389,7 +1389,7 @@ function Policy({role}){
                   <div style={{display:'flex',alignItems:'center',gap:12}}>
                     <span style={{fontSize:11,color:'var(--t3)'}}>{enabled}/{rl.length} rules</span>
                     {/* Stop propagation so toggle click doesn't collapse the group */}
-                    <div className={`sq-toggle ${sc.enabled?'on':''}`}
+                    <button type="button" role="switch" aria-checked={sc.enabled} className={`sq-toggle ${sc.enabled?'on':''}`}
                       onClick={ev=>{ev.stopPropagation();toggleScanner(g.key);}}
                       title={sc.enabled?'Scanner enabled — click to disable':'Scanner disabled — click to enable'}/>
                     <span style={{fontSize:11,color:'var(--t3)',width:10,textAlign:'center'}}>{isOpen?'▲':'▼'}</span>
@@ -1406,7 +1406,7 @@ function Policy({role}){
                     </tr></thead>
                     <tbody>{rl.map((rule,i)=>(
                       <tr key={i} onClick={()=>setSelectedRule({...rule,scanner:g.name,path:g.slug})} style={{cursor:'pointer'}}>
-                        <td><div className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
+                        <td><button type="button" role="switch" aria-checked={rule.enabled} className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
                         <td><span className="rule-pattern" style={{color:rule.enabled?'var(--t2)':'var(--t3)'}}>{rule.rule}</span></td>
                         {g.key==='secrets'&&(
                           <td onClick={ev=>ev.stopPropagation()}>
@@ -1649,8 +1649,8 @@ function Audit({events,onRefresh,autoRefresh,setAutoRefresh,refreshMs,setRefresh
               <div className="page-meta-row"><span className="page-meta-label">Retention</span><span className="page-meta-val">last 200</span></div>
             </div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
-              <button className="pause-btn" onClick={onRefresh}>↻ Refresh</button>
-              <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
+              <button className="pause-btn" onClick={onRefresh} aria-label="Refresh audit log">↻ Refresh</button>
+              <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)} aria-label={autoRefresh ? "Disable auto-refresh" : "Enable auto-refresh"}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
               {autoRefresh&&<select value={refreshMs} onChange={e=>setRefreshMs(+e.target.value)} style={{padding:'3px 6px',border:'1px solid var(--yellow)',borderRadius:'var(--r)',background:'var(--bg)',color:'var(--yellow)',fontSize:10}}>
                 {[[5000,'5s'],[15000,'15s'],[30000,'30s'],[60000,'1m']].map(([v,l])=><option key={v} value={v}>{l}</option>)}
               </select>}
@@ -2320,7 +2320,7 @@ function Logs({role}){
               {['ALL','PASS','WARN','ERROR'].map(ff=><button key={ff} className={`filter-btn ${filter===ff?'on':''}`} onClick={()=>setFilter(ff)}>{ff}</button>)}
             </div>
             <button className="pause-btn" onClick={load}>↻ Refresh</button>
-            <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
+            <button className={`pause-btn ${autoRefresh?'on':''}`} onClick={()=>setAutoRefresh(o=>!o)} aria-label={autoRefresh ? "Disable auto-refresh" : "Enable auto-refresh"}>{autoRefresh?'⟳ AUTO ON':'AUTO'}</button>
           </div>
         </div>
       </div>
@@ -2471,7 +2471,7 @@ function AuthSettings({role}){
           </div>
         </div>
         {isAdmin
-          ?<div className={`sq-toggle ${cfg.enabled?'on':''}`}
+          ?<button type="button" role="switch" aria-checked={cfg.enabled} className={`sq-toggle ${cfg.enabled?'on':''}`}
               onClick={()=>set('enabled',!cfg.enabled)}
               style={{cursor:'pointer',width:36,height:20}}/>
           :<span style={{fontSize:11,color:cfg.enabled?'var(--green)':'var(--t3)'}}>
@@ -3065,7 +3065,7 @@ function TokensTab({role}){
           border:'1px solid rgba(74,222,128,.3)',borderRadius:'var(--r)'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
             <span style={{fontSize:12,fontWeight:700,color:'var(--green)'}}>✓ Token issued for {newToken.agent_id}</span>
-            <button onClick={()=>setNewToken(null)} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:16}}>✕</button>
+            <button onClick={()=>setNewToken(null)} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:16}} title="Close token modal" aria-label="Close token modal">✕</button>
           </div>
           <div style={{padding:'8px 10px',background:'var(--bg)',borderRadius:'var(--r)',
             fontFamily:'var(--mono)',fontSize:11,color:'var(--t2)',wordBreak:'break-all',marginBottom:8}}>
@@ -3686,7 +3686,7 @@ function App(){
           <span className="brand-env">PROD · US-EAST-1</span>
         </div>
         <div className="hdr-mid">
-          <button className="kbd-hint" onClick={()=>setCmdkOpen(true)}>
+          <button className="kbd-hint" onClick={()=>setCmdkOpen(true)} aria-label="Open command palette">
             <span className="sym">◎</span>
             <span>Search · jump · run</span>
             <kbd>&#8984;K</kbd>
@@ -3701,7 +3701,7 @@ function App(){
             <span className="status-sep">·</span>
             <span>{rps}/s</span>
           </div>
-          <button className="notif-btn" title="Notifications">🔔</button>
+          <button className="notif-btn" title="Notifications" aria-label="Notifications">🔔</button>
           <div className="user">
             <span className="user-avatar">OP</span>
             <span>ops@armor</span>
