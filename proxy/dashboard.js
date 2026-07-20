@@ -464,8 +464,8 @@ function SSOConfig({isAdmin}){
     <div className="posture-block" style={{marginBottom:1}}>
       <div className="posture-hdr" onClick={()=>setOpen(o=>!o)}>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
-          {isAdmin&&<div className={`sq-toggle ${cfg.enabled?'on':''}`}
-            onClick={e=>{e.stopPropagation();set('enabled',!cfg.enabled);}}/>}
+          {isAdmin&&<button type="button" role="switch" aria-checked={cfg.enabled} aria-label="Toggle SSO/OIDC" className={`sq-toggle ${cfg.enabled?'on':''}`}
+            onClick={e=>{e.stopPropagation();set('enabled',!cfg.enabled);}}></button>}
           {!isAdmin&&<span className="status-dot" style={{background:cfg.enabled?'var(--green)':'var(--muted)'}}/>}
           <span className="posture-name">SSO / OIDC</span>
           <span className="posture-slug">/sso</span>
@@ -745,7 +745,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
 
   const Toggle=({path,checked,top})=>(
     isAdmin
-      ?<div className={`sq-toggle ${checked?'on':''}`} onClick={()=>top?setTopField(path,!checked):setField(path,!checked)} style={{cursor:'pointer'}}/>
+      ?<button type="button" role="switch" aria-checked={checked} aria-label={`Toggle ${path}`} className={`sq-toggle ${checked?'on':''}`} onClick={()=>top?setTopField(path,!checked):setField(path,!checked)} style={{cursor:'pointer'}}></button>
       :<span className="ro-val">{checked?'enabled':'disabled'}</span>
   );
 
@@ -932,7 +932,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
           <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:10,overflow:'hidden'}}>
             {/* Header row */}
             <div style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
-              <div className={`sq-toggle ${wh.enabled?'on':''}`} onClick={()=>isAdmin&&setWebhookField(idx,'enabled',!wh.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              <button type="button" role="switch" aria-checked={wh.enabled} aria-label={`Toggle SIEM destination ${wh.name || 'Unnamed'}`} className={`sq-toggle ${wh.enabled?'on':''}`} onClick={()=>isAdmin&&setWebhookField(idx,'enabled',!wh.enabled)} style={{cursor:isAdmin?'pointer':'default'}}></button>
               {isAdmin
                 ?<input value={wh.name||''} onChange={e=>setWebhookField(idx,'name',e.target.value)}
                     style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
@@ -982,9 +982,9 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
                     :<span className="ro-val">{wh.timeout_ms||3000}</span>}
                 </CfgRow>
                 <CfgRow label="Include payload" sub="">
-                  <div className={`sq-toggle ${wh.include_payload?'on':''}`}
+                  <button type="button" role="switch" aria-checked={wh.include_payload} aria-label="Include payload in webhook" className={`sq-toggle ${wh.include_payload?'on':''}`}
                     onClick={()=>isAdmin&&setWebhookField(idx,'include_payload',!wh.include_payload)}
-                    style={{cursor:isAdmin?'pointer':'default'}}/>
+                    style={{cursor:isAdmin?'pointer':'default'}}></button>
                 </CfgRow>
                 {isAdmin&&(
                   <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
@@ -1018,7 +1018,7 @@ function PostureConfig({pol,isAdmin,setField,setTopField,addTool,removeTool,
         {(pol?.threat_feeds?.feeds||[]).map((feed,idx)=>(
           <div key={idx} style={{border:'1px solid var(--b2)',borderRadius:'var(--r)',marginBottom:8,overflow:'hidden'}}>
             <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--s2)',borderBottom:'1px solid var(--b1)'}}>
-              <div className={`sq-toggle ${feed.enabled?'on':''}`} onClick={()=>isAdmin&&setFeedField(idx,'enabled',!feed.enabled)} style={{cursor:isAdmin?'pointer':'default'}}/>
+              <button type="button" role="switch" aria-checked={feed.enabled} aria-label={`Toggle feed ${feed.name || 'Unnamed'}`} className={`sq-toggle ${feed.enabled?'on':''}`} onClick={()=>isAdmin&&setFeedField(idx,'enabled',!feed.enabled)} style={{cursor:isAdmin?'pointer':'default'}}></button>
               {isAdmin
                 ?<input value={feed.name||''} onChange={e=>setFeedField(idx,'name',e.target.value)}
                     style={{flex:1,background:'none',border:'none',outline:'none',color:'var(--t1)',fontSize:12,fontWeight:600,fontFamily:'var(--font)'}}
@@ -1389,9 +1389,9 @@ function Policy({role}){
                   <div style={{display:'flex',alignItems:'center',gap:12}}>
                     <span style={{fontSize:11,color:'var(--t3)'}}>{enabled}/{rl.length} rules</span>
                     {/* Stop propagation so toggle click doesn't collapse the group */}
-                    <div className={`sq-toggle ${sc.enabled?'on':''}`}
+                    <button type="button" role="switch" aria-checked={sc.enabled} aria-label={`Toggle scanner ${g.name}`} className={`sq-toggle ${sc.enabled?'on':''}`}
                       onClick={ev=>{ev.stopPropagation();toggleScanner(g.key);}}
-                      title={sc.enabled?'Scanner enabled — click to disable':'Scanner disabled — click to enable'}/>
+                      title={sc.enabled?'Scanner enabled — click to disable':'Scanner disabled — click to enable'}></button>
                     <span style={{fontSize:11,color:'var(--t3)',width:10,textAlign:'center'}}>{isOpen?'▲':'▼'}</span>
                   </div>
                 </div>
@@ -1406,7 +1406,7 @@ function Policy({role}){
                     </tr></thead>
                     <tbody>{rl.map((rule,i)=>(
                       <tr key={i} onClick={()=>setSelectedRule({...rule,scanner:g.name,path:g.slug})} style={{cursor:'pointer'}}>
-                        <td><div className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}/></td>
+                        <td><button type="button" role="switch" aria-checked={rule.enabled} aria-label={`Toggle rule ${rule.rule}`} className={`sq-toggle ${rule.enabled?'on':''}`} onClick={ev=>{ev.stopPropagation();toggleRule(g.key,g.lk,i);}}></button></td>
                         <td><span className="rule-pattern" style={{color:rule.enabled?'var(--t2)':'var(--t3)'}}>{rule.rule}</span></td>
                         {g.key==='secrets'&&(
                           <td onClick={ev=>ev.stopPropagation()}>
@@ -2471,9 +2471,9 @@ function AuthSettings({role}){
           </div>
         </div>
         {isAdmin
-          ?<div className={`sq-toggle ${cfg.enabled?'on':''}`}
+          ?<button type="button" role="switch" aria-checked={cfg.enabled} aria-label="Toggle SSO/OIDC" className={`sq-toggle ${cfg.enabled?'on':''}`}
               onClick={()=>set('enabled',!cfg.enabled)}
-              style={{cursor:'pointer',width:36,height:20}}/>
+              style={{cursor:'pointer',width:36,height:20}}></button>
           :<span style={{fontSize:11,color:cfg.enabled?'var(--green)':'var(--t3)'}}>
               {cfg.enabled?'enabled':'disabled'}
             </span>
