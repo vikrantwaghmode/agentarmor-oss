@@ -1,0 +1,3 @@
+## 2024-07-25 - Accessible Toggle Switches
+**Learning:** Found a pattern where custom toggle switches (`.sq-toggle`) were implemented using `<div>` elements. While visually functional, these are completely inaccessible to screen readers and keyboard users as they lack semantic meaning and focusability.
+**Action:** Replaced `<div>` toggles with `<button type="button" role="switch" aria-checked={state}>` to provide semantic meaning, keyboard focusability, and screen reader support. Added `:focus-visible` styles (`appearance: none`, `padding: 0`, and `outline` changes) to ensure keyboard navigation remains accessible while maintaining the existing visual design. This is a reusable pattern for any custom toggle implementations in this codebase.
